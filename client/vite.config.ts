@@ -16,5 +16,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    proxy: {
+      "/sixfront/colyseus": {
+        target: "http://127.0.0.1:2571",
+        changeOrigin: true,
+        ws: true,
+        rewrite: (p) => p.replace(/^\/sixfront\/colyseus/, ""),
+      },
+    },
   },
 });
