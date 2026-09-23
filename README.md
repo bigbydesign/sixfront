@@ -1,6 +1,6 @@
 # Big Hersh House
 
-Multiplayer FFA through **Derek and Hershal's house**. Quake-speed first person, Colyseus authority.
+Multiplayer FFA through **Derek and Hershal's house**. First-person Three.js client, Colyseus authority.
 
 - Client: `/sixfront/`
 - Colyseus: `/sixfront/colyseus/`

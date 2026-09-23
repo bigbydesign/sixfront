@@ -137,7 +137,6 @@ function lookDefault(): void {
 function startGame(): void {
   const stage = document.getElementById("stage")!;
   view = new ThreeView(session, stage);
-  document.getElementById("quake-bar")?.classList.remove("hidden");
   document.getElementById("radar")?.classList.remove("hidden");
 }
 

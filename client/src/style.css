@@ -24,14 +24,13 @@ button { cursor: pointer; }
 #screen { overflow: auto; z-index: 2; }
 .menu-open #stage { pointer-events: none; }
 .menu-open #hud { pointer-events: auto; }
-#stage canvas, .quake-view, .wolf-view, .css3d-view, .three-view {
+#stage canvas, .three-view {
   display: block; width: 100%; height: 100%; outline: none; cursor: crosshair;
 }
-.quake-overlay, .css3d-overlay, .three-overlay {
+.three-overlay {
   position: absolute; inset: 0; width: 100%; height: 100%;
   pointer-events: none; z-index: 3;
 }
-#stage .quake-view { position: absolute; inset: 0; z-index: 1; }
 
 /* —— Three.js hybrid FPS —— */
 .three-root {
@@ -74,222 +73,6 @@ button { cursor: pointer; }
   left: 0; width: 5px;
   box-shadow: 0 0 0 1px rgba(0,0,0,0.65), 13px 0 0 0 #fff, 13px 0 0 1px rgba(0,0,0,0.65);
 }
-
-/* —— CSS 3D / PolyCSS-style world (cssQuake approach) —— */
-.css3d-root {
-  position: absolute; inset: 0; overflow: hidden;
-  background: linear-gradient(180deg, #6a8eaa 0%, #8aabbc 38%, #b8c8b0 72%, #c5d0b8 100%);
-}
-.css3d-view {
-  position: absolute; inset: 0;
-  perspective-origin: 50% 50%;
-  overflow: hidden;
-  z-index: 1;
-}
-.css3d-cam, .css3d-world {
-  position: absolute;
-  left: 50%; top: 50%;
-  width: 0; height: 0;
-  transform-style: preserve-3d;
-}
-.css3d-face, .css3d-floor, .css3d-ceil {
-  position: absolute;
-  left: 0; top: 0;
-  transform-style: preserve-3d;
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
-  background-repeat: repeat;
-  backface-visibility: hidden;
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.35);
-}
-.css3d-floor, .css3d-ceil {
-  backface-visibility: visible;
-}
-.css3d-floor { background-color: #4a3020; }
-.css3d-ceil { background-color: #1a1410; }
-.css3d-roof { pointer-events: none; }
-.css3d-vignette {
-  position: absolute; inset: 0; z-index: 2; pointer-events: none;
-  background: radial-gradient(ellipse 80% 75% at 50% 50%, transparent 50%, rgba(20,25,16,0.28) 100%);
-}
-.css3d-scan { display: none; }
-.css3d-sprite {
-  position: absolute;
-  left: 0; top: 0;
-  width: 56px; height: 88px;
-  margin-left: -28px;
-  transform-style: preserve-3d;
-  transform-origin: center bottom;
-  pointer-events: none;
-}
-.css3d-sprite .spr-body {
-  position: absolute; left: 10px; top: 28px; width: 36px; height: 44px;
-  background: #8a4030; border: 1px solid #1a1008;
-  box-shadow: inset 0 -8px 0 rgba(0,0,0,0.25);
-}
-.css3d-sprite .spr-head {
-  position: absolute; left: 16px; top: 8px; width: 24px; height: 24px;
-  background: #b89068; border: 1px solid #1a1008;
-}
-.css3d-sprite .spr-label {
-  position: absolute; left: 50%; top: -4px; transform: translateX(-50%);
-  font: 600 10px Oswald, sans-serif; color: #f2f2f2;
-  text-shadow: 0 1px 2px #000; white-space: nowrap;
-}
-.css3d-sprite.bike { width: 56px; height: 36px; margin-left: -28px; }
-.css3d-sprite .spr-bike {
-  position: absolute; inset: 8px 4px;
-  background: #1a1c18; border: 1px solid #080808;
-}
-.css3d-flash {
-  position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px;
-  background: radial-gradient(circle, #ffe8a0 0%, #ff7010 40%, transparent 70%);
-  pointer-events: none;
-}
-/* Quake-style weapon stub — large, lower center-right, aimed at crosshair */
-.css3d-gun {
-  position: absolute;
-  left: 52%;
-  bottom: 4%;
-  width: min(52vw, 480px);
-  height: min(38vh, 280px);
-  margin-left: 0;
-  right: auto;
-  z-index: 8; pointer-events: none;
-  transform-origin: 70% 100%;
-  transform: perspective(420px) rotateY(-18deg) rotateX(6deg);
-  transition: opacity 0.12s ease;
-  filter: drop-shadow(0 8px 14px rgba(0,0,0,0.45));
-}
-.css3d-gun.kick { filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5)); }
-.css3d-gun .g-barrel,
-.css3d-gun .g-hopper,
-.css3d-gun .g-breech,
-.css3d-gun .g-stock,
-.css3d-gun .g-mag,
-.css3d-gun .g-sight {
-  position: absolute;
-  border: 1px solid #0a1008;
-  box-sizing: border-box;
-}
-.css3d-gun .g-barrel {
-  bottom: 38%; left: 4%; width: 62%; height: 14%;
-  background: linear-gradient(180deg, #5a7a58 0%, #1a2a18 45%, #2a3a28 100%);
-  border-radius: 2px 8px 8px 2px;
-  box-shadow: inset 0 1px 0 rgba(255,255,200,0.14);
-}
-.css3d-gun .g-barrel::after {
-  content: ""; position: absolute; right: -3%; top: 18%; width: 5%; height: 70%;
-  background: #0c100a; border: 1px solid #1a2018; border-radius: 50%;
-}
-.css3d-gun .g-hopper {
-  left: 52%; bottom: 52%; width: 14%; height: 28%;
-  background: radial-gradient(circle at 35% 30%, #f0b050, #c07028 55%, #6a3810);
-  border-radius: 42% 42% 36% 36%;
-  box-shadow: inset -4px -6px 0 rgba(0,0,0,0.2);
-}
-.css3d-gun .g-breech {
-  left: 48%; bottom: 28%; width: 28%; height: 32%;
-  background: linear-gradient(180deg, #5a7a50, #2a3a28 60%, #1a2418);
-  border-radius: 3px;
-}
-.css3d-gun .g-stock {
-  left: 72%; bottom: 18%; width: 24%; height: 28%;
-  background: linear-gradient(180deg, #7a5840, #3a2818);
-  clip-path: polygon(0 18%, 100% 0, 92% 100%, 8% 88%);
-}
-.css3d-gun .g-mag {
-  left: 54%; bottom: 12%; width: 10%; height: 26%;
-  background: linear-gradient(180deg, #3a4a30, #1a2014);
-  border-radius: 2px;
-}
-.css3d-gun .g-sight {
-  left: 58%; bottom: 60%; width: 3%; height: 10%;
-  background: #1a2014; border-radius: 1px;
-}
-
-/* Pistol — shorter, no hopper */
-.css3d-gun.skin-pistol .g-hopper,
-.css3d-gun.skin-pistol .g-stock { display: none; }
-.css3d-gun.skin-pistol .g-barrel { left: 28%; width: 40%; height: 11%; bottom: 40%; }
-.css3d-gun.skin-pistol .g-breech { left: 58%; width: 24%; height: 28%; bottom: 30%; }
-.css3d-gun.skin-pistol .g-mag { left: 64%; bottom: 14%; width: 8%; height: 22%; }
-.css3d-gun.skin-pistol .g-sight { left: 68%; bottom: 58%; }
-
-/* SMG — compact + stub stock */
-.css3d-gun.skin-smg .g-barrel { width: 48%; left: 14%; }
-.css3d-gun.skin-smg .g-hopper { left: 46%; width: 11%; height: 22%; bottom: 50%; }
-.css3d-gun.skin-smg .g-breech { left: 48%; }
-
-/* LMG — fat barrel + big mag */
-.css3d-gun.skin-lmg .g-barrel { width: 68%; height: 18%; left: 2%; bottom: 36%; }
-.css3d-gun.skin-lmg .g-mag { left: 48%; width: 16%; height: 36%; bottom: 8%; background: linear-gradient(180deg, #4a5a38, #1a2414); }
-.css3d-gun.skin-lmg .g-hopper { display: none; }
-
-/* Shotgun */
-.css3d-gun.skin-shotgun .g-hopper { display: none; }
-.css3d-gun.skin-shotgun .g-barrel { width: 68%; height: 15%; background: linear-gradient(180deg, #6a5840, #2a2010 50%, #3a2a18); }
-.css3d-gun.skin-shotgun .g-breech { background: linear-gradient(180deg, #8a6840, #3a2818); }
-
-/* Rocket / AT */
-.css3d-gun.skin-rocket .g-hopper,
-.css3d-gun.skin-rocket .g-mag,
-.css3d-gun.skin-rocket .g-sight { display: none; }
-.css3d-gun.skin-rocket .g-barrel {
-  left: 8%; width: 70%; height: 24%; bottom: 34%; border-radius: 18px;
-  background: linear-gradient(180deg, #6a7060, #2a3028 50%, #1a2018);
-}
-.css3d-gun.skin-rocket .g-breech { left: 68%; width: 18%; height: 30%; }
-.css3d-gun.skin-rocket .g-stock { left: 80%; }
-
-/* Barricade / eng tool */
-.css3d-gun.skin-barricade .g-hopper,
-.css3d-gun.skin-barricade .g-barrel::after,
-.css3d-gun.skin-barricade .g-sight { display: none; }
-.css3d-gun.skin-barricade .g-barrel {
-  width: 42%; height: 10%; left: 28%; bottom: 46%;
-  background: linear-gradient(180deg, #c0c4c8, #6a7078);
-}
-.css3d-gun.skin-barricade .g-breech {
-  left: 58%; width: 16%; height: 34%; bottom: 32%; border-radius: 6px;
-  background: linear-gradient(135deg, #d4a060, #8a5020);
-}
-.css3d-gun.skin-barricade .g-stock,
-.css3d-gun.skin-barricade .g-mag { display: none; }
-
-/* Flying hotdog projectile */
-.css3d-hotdog {
-  position: absolute; left: 0; top: 0;
-  width: 36px; height: 18px; margin-left: -18px; margin-top: -9px;
-  transform-style: preserve-3d; pointer-events: none; z-index: 3;
-}
-.css3d-hotdog .dog-bun {
-  position: absolute; inset: 0;
-  background: linear-gradient(180deg, #e8b878, #c48440 55%, #a06830);
-  border-radius: 10px; border: 1px solid #5a3818;
-}
-.css3d-hotdog .dog-meat {
-  position: absolute; left: 4px; right: 4px; top: 5px; height: 8px;
-  background: linear-gradient(180deg, #c05038, #8a2818);
-  border-radius: 6px;
-}
-.css3d-hotdog .dog-mustard {
-  position: absolute; left: 8px; right: 8px; top: 6px; height: 2px;
-  background: #f0d040; border-radius: 1px; opacity: 0.9;
-}
-.css3d-bolt {
-  position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px;
-  background: radial-gradient(circle, #fff6c0, #ff9020 55%, transparent 70%);
-  border-radius: 50%; pointer-events: none;
-}
-.css3d-cross {
-  position: absolute; left: 50%; top: 50%; width: 6px; height: 6px;
-  margin: -3px 0 0 -3px; z-index: 5; pointer-events: none;
-  opacity: 0.95; border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.55), 0 1px 4px rgba(0,0,0,0.35);
-}
-.css3d-cross::before, .css3d-cross::after { display: none; }
 
 #hud { pointer-events: none; }
 #hud button, #hud .death, #hud .board, #hud .pause { pointer-events: auto; }
@@ -394,7 +177,7 @@ input[type="text"], input[type="number"], select { width: 100%; }
 .join-divider { margin: 8px 0 10px; font-size: 14px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
 .identities button, .classes button, .ready-toggle { border-color: var(--line); }
 
-.objectives, .scoreline, .feed, .prompt, .quake-bar, .hersh-bar, .death, .board, .pause {
+.objectives, .scoreline, .feed, .prompt, .death, .board, .pause {
   position: absolute;
 }
 .objectives { top: 18px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
@@ -415,90 +198,6 @@ input[type="text"], input[type="number"], select { width: 100%; }
   padding: 8px 14px; border-radius: 999px;
   background: rgba(12, 16, 10, 0.8);
   letter-spacing: 0.14em;
-}
-.quake-bar, .hersh-bar {
-  left: 0; right: 0; bottom: 0;
-  min-height: 92px;
-  pointer-events: none;
-  z-index: 6;
-  position: absolute;
-  background: linear-gradient(180deg, rgba(18,22,14,0.72) 0%, #141910 40%);
-  border-top: 1px solid rgba(224,162,58,0.35);
-  font-family: "Oswald", Impact, sans-serif;
-  padding: 8px 16px 10px;
-  box-sizing: border-box;
-}
-.hersh-brand {
-  text-align: center;
-  font-size: 11px; letter-spacing: 0.22em; color: var(--amber);
-  margin-bottom: 4px;
-}
-.hersh-row {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 12px;
-}
-.hersh-label {
-  font-size: 10px; letter-spacing: 0.14em; color: var(--muted); display: block; margin-bottom: 0;
-  line-height: 1;
-}
-.q-cell { display: flex; align-items: flex-end; gap: 18px; }
-.q-left { justify-content: flex-start; }
-.q-mid {
-  flex-direction: column; justify-content: center; align-items: center; gap: 2px;
-  text-align: center; letter-spacing: 0.12em; font-size: 12px; color: #c4a878;
-  min-width: 120px;
-}
-.q-right { justify-content: flex-end; }
-.q-stat { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
-.q-right .q-stat { align-items: flex-end; }
-.q-stat b {
-  font-size: clamp(28px, 4.5vw, 44px); line-height: 0.95; font-weight: 600;
-  color: #e8c070; text-shadow: 0 2px 0 #0a0c08;
-  letter-spacing: 0.02em; min-width: 1.4ch;
-}
-.q-stat.q-main b { font-size: clamp(32px, 5vw, 48px); }
-.q-stat b.hurt { color: #e87840; }
-.q-stat b.crit { color: #ff3030; animation: qpulse 0.55s ease-in-out infinite alternate; }
-.q-stat b.empty { color: #6a3028; }
-.q-sub {
-  flex-direction: column; align-items: flex-end; gap: 2px;
-  color: #b89060; font-size: 16px; letter-spacing: 0.08em;
-}
-.q-sub b { font-size: 22px !important; color: #d4a060 !important; text-shadow: 1px 1px 0 #120804 !important; }
-.q-icon {
-  width: 42px; height: 42px; flex: 0 0 auto;
-  image-rendering: pixelated;
-  border: 2px solid #1a100c;
-  box-shadow: inset 0 0 0 1px rgba(255,220,160,0.12);
-}
-.q-armor {
-  background:
-    linear-gradient(135deg, #6a8a48 0%, #3a5a28 50%, #2a4018 100%);
-  clip-path: polygon(50% 4%, 92% 22%, 92% 70%, 50% 96%, 8% 70%, 8% 22%);
-}
-.q-face {
-  width: 48px; height: 48px; border-radius: 2px;
-  background:
-    radial-gradient(circle at 50% 42%, #c4a070 0 38%, transparent 39%),
-    linear-gradient(180deg, #3a342c 0 28%, #5a4838 28% 100%);
-  position: relative;
-}
-.q-face::before, .q-face::after {
-  content: ""; position: absolute; width: 5px; height: 5px; background: #1a120c; border-radius: 1px; top: 22px;
-}
-.q-face::before { left: 14px; }
-.q-face::after { right: 14px; }
-.q-face[data-hp="mid"] { filter: saturate(0.85) brightness(0.92); }
-.q-face[data-hp="low"] {
-  filter: saturate(1.2) hue-rotate(-10deg);
-  box-shadow: inset 0 0 0 2px #8a2020, 0 0 8px rgba(180,30,20,0.45);
-}
-.q-shells {
-  background:
-    linear-gradient(90deg, #c4a040 0 28%, #2a2010 28% 36%, #c4a040 36% 64%, #2a2010 64% 72%, #c4a040 72% 100%);
-  border-radius: 3px;
 }
 #q-bike { color: #8ec6ff; letter-spacing: 0.1em; }
 @keyframes qpulse { from { opacity: 1; } to { opacity: 0.55; } }
@@ -583,50 +282,6 @@ td, th { padding: 6px 10px; text-align: left; }
   .lobby-grid { grid-template-columns: 1fr; }
   .home { padding: 32px 20px; }
 }
-
-/* —— Quake1 / WebQuake embed (Option 1) —— */
-.quake1-root {
-  position: absolute; inset: 0;
-  background: #000;
-  display: flex; flex-direction: column;
-}
-.quake1-chrome {
-  flex: 0 0 auto;
-  display: flex; align-items: center; gap: 16px;
-  padding: 8px 14px;
-  background: linear-gradient(180deg, #2a2018, #1a140e);
-  border-bottom: 1px solid #4a3828;
-  z-index: 6;
-  pointer-events: auto;
-}
-.quake1-brand {
-  font-family: Oswald, Impact, sans-serif;
-  letter-spacing: 0.08em;
-  color: #e8c060;
-  font-size: 15px;
-}
-.quake1-hint {
-  color: #9a9080;
-  font-size: 12px;
-  flex: 1;
-}
-.quake1-chrome button {
-  background: #3a2a18;
-  border: 1px solid #8a6840;
-  color: #f0e0c0;
-  padding: 6px 14px;
-  border-radius: 4px;
-  font-size: 13px;
-}
-.quake1-chrome button:hover { background: #5a4020; }
-.quake1-frame {
-  flex: 1 1 auto;
-  width: 100%;
-  border: 0;
-  background: #000;
-  min-height: 0;
-}
-
 
 .toast-error {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
@@ -726,8 +381,6 @@ td, th { padding: 6px 10px; text-align: left; }
 .prompt:empty { display: none; }
 .feed { top: 14px; right: 16px; text-align: right; color: #f3ead4; z-index: 5; max-width: 280px; }
 .objectives { top: auto; bottom: 72px; left: 16px; transform: none; }
-.quake-bar, .hersh-bar { display: none !important; }
 @media (max-width: 720px) {
   .fps-chips { right: 10px; bottom: 12px; }
-  .css3d-gun { left: 42%; width: min(70vw, 360px); height: min(32vh, 200px); bottom: 2%; }
 }

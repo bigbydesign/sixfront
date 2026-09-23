@@ -1,6 +1,6 @@
 /**
- * Three.js hybrid FPS view — Big Hersh House / Nuketown layout.
- * Keeps Colyseus Session + prediction; replaces CSS-3D polycss renderer.
+ * Three.js FPS view — Big Hersh House / Nuketown layout.
+ * Keeps Colyseus Session + prediction.
  */
 import * as THREE from "three";
 import {
