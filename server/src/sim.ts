@@ -42,7 +42,7 @@ import {
   type MoveInput,
   type WeaponId,
 } from "@sixfront/shared";
-import { BarricadeState, DoorState, ObjectiveState, PickupState, PlayerState, ProjectileState, TowerState, VehicleState, WarState } from "./schema";
+import { BarricadeState, DoorState, ObjectiveState, PickupState, PlayerState, ProjectileState, SmokeCloudState, TowerState, VehicleState, WarState } from "./schema";
 import {
   CHEESE_BUFF_SEC,
   CHEESE_WEAKEN_SEC,
@@ -61,6 +61,14 @@ import {
   CHEESE_CURL_SPAWN,
   isCheeseCurl,
 } from "./cheeseCurl";
+import {
+  SMOKE_CARRY_MAX,
+  SMOKE_DURATION,
+  SMOKE_NEAR,
+  SMOKE_RADIUS,
+  SMOKE_RESPAWN,
+  SMOKE_SPOTS,
+} from "./smoke";
 
 interface RT {
   mags: number[];
@@ -91,6 +99,7 @@ interface RT {
   reviveLeft: number;
   noiseLeft: number;
   nadeUsed: number;
+  smokes: number;
   colt45: number;
   cheeseWeakenLeft: number;
   damageBuffLeft: number;
@@ -150,6 +159,10 @@ export class WarSim {
   derlConfidence = 1;
   private cheeseGoal = { x: 0, y: 0, until: 0 };
   private readonly spotUntil = new Map<string, number>();
+  /** Smoke canister pad → seconds until respawn while alive=0. */
+  private readonly smokeRespawn = new Map<string, number>();
+  /** Active smoke clouds with remaining lifetime (schema mirrors x/y/r). */
+  private readonly smokeTtl = new Map<string, number>();
 
   constructor(
     readonly state: WarState,
@@ -318,6 +331,8 @@ export class WarSim {
     this.clearProjectiles();
     this.state.barricades.clear();
     this.state.pickups.clear();
+    this.clearSmokeClouds();
+    this.smokeRespawn.clear();
     this.resetVehicles();
     this.resetDoors();
     this.resetObjectives();
@@ -325,6 +340,7 @@ export class WarSim {
     this.removeDerl();
     this.removeCheeseCurl();
     this.spawnLocoPickups();
+    this.spawnSmokePickups();
     this.derlSpawnAt = this.clock - DERL_SPAWN_DELAY;
     this.derlConfidence = 1;
     this.state.derlAlive = 0;
@@ -346,7 +362,7 @@ export class WarSim {
     }
     this.removeBots();
     this.state.phase = "play";
-    this.emit({ t: "notice", id: "", text: "Fight's on. 4Loco is on the map." });
+    this.emit({ t: "notice", id: "", text: "Fight's on. 4Loco and smoke are on the map." });
     return null;
   }
 
@@ -355,6 +371,8 @@ export class WarSim {
     this.clearProjectiles();
     this.state.barricades.clear();
     this.state.pickups.clear();
+    this.clearSmokeClouds();
+    this.smokeRespawn.clear();
     this.resetVehicles();
     this.resetDoors();
     this.resetObjectives();
@@ -375,6 +393,7 @@ export class WarSim {
       p.seat = -1;
       p.ready = 0;
       p.respawnLeft = 0;
+      p.smokes = 0;
     });
   }
 
@@ -395,6 +414,7 @@ export class WarSim {
     this.moveAll(dt);
     this.combat(dt);
     this.stepPickups();
+    this.stepSmokeClouds(dt);
     this.capture(dt);
     this.scoreTick(dt);
     this.life(dt);
@@ -464,7 +484,7 @@ export class WarSim {
       grenadeCd: 0, abilityCd: 0, abilityLeft: 0, suppressLeft: 0, pulseLeft: 0, lockLeft: 0, sprintLeft: 0,
       slowLeft: 0, ramLeft: 0, barricades: 2, interactLatch: false, abilityLatch: false, fireLatch: false,
       grenadeLatch: false, input: emptyInput(), livesLeft: 0, downedLeft: 0, invulnLeft: 0,
-      reviveLeft: 0, noiseLeft: 0, nadeUsed: 0, colt45: 0, cheeseWeakenLeft: 0, damageBuffLeft: 0,
+      reviveLeft: 0, noiseLeft: 0, nadeUsed: 0, smokes: 0, colt45: 0, cheeseWeakenLeft: 0, damageBuffLeft: 0,
       lastHitId: "", lastHitName: "", lastHitWeapon: "", lastHitDist: 0,
     };
   }
@@ -594,6 +614,7 @@ export class WarSim {
     p.vehicleId = "";
     p.seat = -1;
     p.weaponSlot = 1;
+    p.smokes = 0;
     p.killerName = "";
     p.respawnLeft = 0;
     // Bikes stay parked on the map — walk up and press E to mount.
@@ -1305,6 +1326,11 @@ export class WarSim {
   private throwGrenade(p: PlayerState, rt: RT): void {
     const gKey = rt.input.grenade && !rt.grenadeLatch;
     const gFire = p.weaponSlot === 4 && rt.input.fire && !rt.fireLatch;
+    // G with a smoke canister → smoke. Hotdog stays on key 4 (LMB) and on G when empty-handed.
+    if (gKey && rt.smokes > 0) {
+      this.throwSmoke(p, rt);
+      return;
+    }
     const rising = gKey || gFire;
     if (!rising || rt.grenadeCd > 0) return;
     if (this.grenadesLeft(p, rt) <= 0) return;
@@ -1339,6 +1365,41 @@ export class WarSim {
     view.weapon = "grenade";
     this.state.projectiles.set(id, view);
     this.emit({ t: "shoot", id: p.id, x: p.x, y: p.y, aim: p.aim, weapon: "grenade", x2: proj.x, y2: proj.y });
+  }
+
+  /** Arc throw — pops a vision-blocking smoke cloud on first ground contact. */
+  private throwSmoke(p: PlayerState, rt: RT): void {
+    if (rt.grenadeCd > 0 || rt.smokes <= 0) return;
+    rt.grenadeCd = 0.55;
+    rt.smokes -= 1;
+    p.smokes = rt.smokes;
+    const g = WEAPONS.grenade;
+    const id = `sm${this.seq++}`;
+    const hand = 40;
+    const stance = this.stanceOf(rt, p.seat >= 0);
+    const loft = 290 + Math.sin(rt.input.pitch) * 180;
+    const speed = g.speed * Math.cos(rt.input.pitch);
+    const proj: Proj = {
+      id,
+      x: p.x + Math.cos(p.aim) * hand,
+      y: p.y + Math.sin(p.aim) * hand,
+      z: stance.eye,
+      vz: loft,
+      vx: Math.cos(p.aim) * speed,
+      vy: Math.sin(p.aim) * speed,
+      team: p.team, ownerId: p.id, weapon: "smoke", ttl: 3.2, radius: 6, damage: 0,
+      splash: 0, splashDamage: 0, vehicleMul: 0, kind: "smoke",
+      bounces: 0,
+    };
+    this.projs.push(proj);
+    const view = new ProjectileState();
+    view.id = id;
+    view.kind = "smoke";
+    view.owner = p.id;
+    view.team = p.team;
+    view.weapon = "smoke";
+    this.state.projectiles.set(id, view);
+    this.emit({ t: "shoot", id: p.id, x: p.x, y: p.y, aim: p.aim, weapon: "smoke", x2: proj.x, y2: proj.y });
   }
 
   private grenadesLeft(p: PlayerState, rt: RT): number {
@@ -1379,6 +1440,17 @@ export class WarSim {
       const ox = proj.x;
       const oy = proj.y;
       proj.ttl -= dt;
+      if (proj.kind === "smoke") {
+        proj.vz -= 580 * dt;
+        proj.z += proj.vz * dt;
+        proj.x += proj.vx * dt;
+        proj.y += proj.vy * dt;
+        if (proj.z <= 3 || proj.ttl <= 0) {
+          this.deploySmoke(proj.x, proj.y);
+          this.removeProj(i);
+        }
+        continue;
+      }
       if (proj.kind === "grenade") {
         proj.vz -= 580 * dt;
         proj.z += proj.vz * dt;
@@ -1706,6 +1778,50 @@ export class WarSim {
     });
   }
 
+  private spawnSmokePickups(): void {
+    this.smokeRespawn.clear();
+    SMOKE_SPOTS.forEach((spot, i) => {
+      if (blockedAt(this.map, spot.x, spot.y)) return;
+      const p = new PickupState();
+      p.id = `smoke-${i}`;
+      p.kind = "smoke";
+      p.x = spot.x;
+      p.y = spot.y;
+      p.alive = 1;
+      this.state.pickups.set(p.id, p);
+    });
+  }
+
+  private deploySmoke(x: number, y: number): void {
+    const id = `cloud-${this.seq++}`;
+    const cloud = new SmokeCloudState();
+    cloud.id = id;
+    cloud.x = x;
+    cloud.y = y;
+    cloud.r = SMOKE_RADIUS;
+    this.state.smokeClouds.set(id, cloud);
+    this.smokeTtl.set(id, SMOKE_DURATION);
+    this.emit({ t: "explode", x, y, kind: "smoke" });
+  }
+
+  private stepSmokeClouds(dt: number): void {
+    const drop: string[] = [];
+    this.smokeTtl.forEach((left, id) => {
+      const next = left - dt;
+      if (next <= 0) drop.push(id);
+      else this.smokeTtl.set(id, next);
+    });
+    for (const id of drop) {
+      this.smokeTtl.delete(id);
+      this.state.smokeClouds.delete(id);
+    }
+  }
+
+  private clearSmokeClouds(): void {
+    this.smokeTtl.clear();
+    this.state.smokeClouds.clear();
+  }
+
   private spawnDerl(): void {
     if (this.state.players.has(DERL_ID)) return;
     const p = new PlayerState();
@@ -1773,8 +1889,22 @@ export class WarSim {
 
   private stepPickups(): void {
     const remove: string[] = [];
+    this.smokeRespawn.forEach((left, id) => {
+      const next = left - TICK;
+      if (next <= 0) {
+        const pick = this.state.pickups.get(id);
+        if (pick && pick.kind === "smoke") pick.alive = 1;
+        this.smokeRespawn.delete(id);
+      } else {
+        this.smokeRespawn.set(id, next);
+      }
+    });
     this.state.pickups.forEach((pick, id) => {
-      if (!pick.alive) { remove.push(id); return; }
+      if (!pick.alive) {
+        // Smoke pads stay in the map and respawn; loco/colt are one-shot.
+        if (pick.kind !== "smoke") remove.push(id);
+        return;
+      }
       if (pick.kind === "loco") {
         this.state.players.forEach((p) => {
           if (!pick.alive || p.alive !== 1 || isDerl(p.id)) return;
@@ -1796,6 +1926,19 @@ export class WarSim {
             remove.push(id);
           }
         }
+      } else if (pick.kind === "smoke") {
+        this.state.players.forEach((p) => {
+          if (!pick.alive || p.alive !== 1 || isDerl(p.id) || isCheeseCurl(p.id)) return;
+          const rt = this.rt.get(p.id);
+          if (!rt || rt.smokes >= SMOKE_CARRY_MAX) return;
+          const d = (p.x - pick.x) ** 2 + (p.y - pick.y) ** 2;
+          if (d > 38 * 38) return;
+          rt.smokes += 1;
+          p.smokes = rt.smokes;
+          pick.alive = 0;
+          this.smokeRespawn.set(id, SMOKE_RESPAWN);
+          this.emit({ t: "notice", id: p.id, text: "Picked up a smoke grenade" });
+        });
       }
     });
     for (const id of remove) this.state.pickups.delete(id);
@@ -2024,11 +2167,26 @@ export class WarSim {
       if (Math.hypot(viewer.x - tower.x, viewer.y - tower.y) < 520 * MAP_SCALE) range += 340 * MAP_SCALE;
     });
     if (dist > range) return false;
+    if (this.smokeBlocks(viewer, target, dist)) return false;
     if (dist < 420 * MAP_SCALE) return true;
     for (const b of this.map.buildings) {
       if (segmentHitsRect(viewer.x, viewer.y, target.x, target.y, b)) return false;
     }
     return true;
+  }
+
+  /** Opaque across a smoke cloud unless the two players are right next to each other. */
+  private smokeBlocks(viewer: PlayerState, target: PlayerState, dist: number): boolean {
+    if (this.smokeTtl.size === 0) return false;
+    if (dist <= SMOKE_NEAR) return false;
+    let blocked = false;
+    this.state.smokeClouds.forEach((cloud) => {
+      if (blocked) return;
+      if (segmentHitsCircle(viewer.x, viewer.y, target.x, target.y, cloud.x, cloud.y, cloud.r)) {
+        blocked = true;
+      }
+    });
+    return blocked;
   }
 
   private surf(x: number, y: number): number {
@@ -2225,6 +2383,7 @@ export class WarSim {
       p.reserve = rt.reserves[idx] ?? 0;
     }
     p.grenades = this.grenadesLeft(p, rt);
+    p.smokes = rt.smokes;
     p.reloading = rt.reloading ? 1 : 0;
     p.reloadPct = rt.reloading ? 1 - rt.reloadLeft / rt.reloadDur : 0;
     p.abilityCd = rt.abilityCd;

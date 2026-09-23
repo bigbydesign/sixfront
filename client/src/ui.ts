@@ -141,7 +141,7 @@ export function showHow(onBack: () => void): void {
       <h2>How to Play</h2>
       <div class="help-grid">
         <section><h3>Free for all</h3><p>Everyone fights alone at Big Hersh House. Hold Derko's Attic, contest the mid bus, or push the guest house. First to the kill target wins.</p></section>
-        <section><h3>Move and fight</h3><p>First person. Click to look. W A S D move, Left Shift run, Ctrl crouch, Space jump. Three trampolines launch you high for air shots. Aim up/down to shoot off the flat plane. 1–3 guns, 4 hotdog, 5 cheese gun. Scout sniper — RMB scopes. G throws hotdogs. F ability (or drop Colt 45 during Derl). Minus mutes music. Esc opens leave menu.</p></section>
+        <section><h3>Move and fight</h3><p>First person. Click to look. W A S D move, Left Shift run, Ctrl crouch, Space jump. Three trampolines launch you high for air shots. Aim up/down to shoot off the flat plane. 1–3 guns, 4 hotdog, 5 cheese gun. Scout sniper — RMB scopes. Gray smoke canisters sit outdoors — walk over one to pick it up, then G throws smoke. Without smoke, G still throws hotdogs; key 4 + fire always throws a hotdog. F ability (or drop Colt 45 during Derl). Minus mutes music. Esc opens leave menu.</p></section>
         <section><h3>Derl boss</h3><p>Derl enters mid-match. Cheese him (5) to weaken (−25% his damage, +25% yours). Drop Colt 45 with F for +200% confidence but −20% his attack speed and damage. Grab green 4Loco cans for +50% health.</p></section>
         <section><h3>eBikes</h3><p>Bikes are parked around the map — walk up and press E to mount. W throttle, S reverse, A/D steer, Shift boost, Space brake. Passengers shoot. Bikes never run out of power. Ramming hurts.</p></section>
         <section><h3>Helicopter</h3><p>One helicopter sits on the south street. Press E to board. Mouse looks freely. W and S fly forward and back, A and D turn the helicopter, Space climbs, Ctrl descends. Let go and it hovers. Click fires hot dogs where you look. E gets out.</p></section>
@@ -439,6 +439,7 @@ export function ensureHud(): void {
       <div class="chip chip-weapon"><span id="q-weapon">RIFLE</span></div>
       <div class="chip chip-ammo"><b id="q-ammo">30</b><span id="q-reserve">90</span></div>
       <div class="chip chip-dog">DOG <b id="q-grenades">5</b></div>
+      <div class="chip chip-smoke">SMOKE <b id="q-smokes">0</b></div>
       <div class="chip chip-ability" id="q-ability">SPRINT</div>
       <div class="chip chip-bike hidden" id="q-bike"></div>
     </div>
@@ -505,6 +506,8 @@ export function updateHud(session: Session, flags: { prompt: string; pause: bool
   ammoEl.classList.toggle("empty", !me.reloading && mag === 0);
   document.getElementById("q-reserve")!.textContent = me.reloading ? "RELOAD" : String(reserve);
   document.getElementById("q-grenades")!.textContent = String(me.grenades ?? 0);
+  const smokeEl = document.getElementById("q-smokes");
+  if (smokeEl) smokeEl.textContent = String(me.smokes ?? 0);
 
   const def = CLASSES[me.classId as ClassId];
   const slotted = def ? slotWeapon(def, me.weaponSlot || 1) : null;

@@ -20,6 +20,7 @@ export interface SyncPlayer {
   mag: number;
   reserve: number;
   grenades: number;
+  smokes: number;
   reloading: number;
   reloadPct: number;
   abilityCd: number;
@@ -110,6 +111,7 @@ export interface SyncState {
   projectiles: { forEach(fn: (p: { id: string; x: number; y: number; z: number; vx: number; vy: number; kind: string; owner: string; weapon: string }, id: string) => void): void };
   barricades: { forEach(fn: (b: { id: string; x: number; y: number; w: number; h: number; hp: number; team: number }, id: string) => void): void };
   pickups: { forEach(fn: (p: { id: string; kind: string; x: number; y: number; alive: number }, id: string) => void): void };
+  smokeClouds: { forEach(fn: (c: { id: string; x: number; y: number; r: number }, id: string) => void): void };
   doors: { forEach(fn: (d: { id: string; open: number }, id: string) => void): void; get(id: string): { id: string; open: number } | undefined };
 }
 

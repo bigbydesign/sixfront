@@ -166,7 +166,7 @@ function handleEvent(evt: GameEvent): void {
     view?.tracer(evt.x, evt.y, evt.x2, evt.y2, evt.z1 ?? 74, evt.z2 ?? 74);
     view?.radarPing(evt.x, evt.y);
     if (evt.id === session.me) view?.onShotFeedback(evt.weapon);
-    else audio.play(evt.weapon === "rocket" ? "rocket" : evt.weapon === "grenade" ? "empty" : "shot", pan(evt.x));
+    else audio.play(evt.weapon === "rocket" ? "rocket" : evt.weapon === "grenade" || evt.weapon === "smoke" ? "empty" : "shot", pan(evt.x));
   }
   if (evt.t === "notice") pushFeed(evt.text);
   if (evt.t === "dead" && evt.id === session.me) audio.play("hurt");

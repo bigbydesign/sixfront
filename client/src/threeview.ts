@@ -221,6 +221,7 @@ export class ThreeView {
   private bikes = new Map<string, THREE.Object3D>();
   private projectiles = new Map<string, THREE.Object3D>();
   private pickups = new Map<string, THREE.Object3D>();
+  private smokeCloudMeshes = new Map<string, THREE.Object3D>();
   private ghosts = new Map<string, Ghost>();
   private tracers: { mesh: THREE.Object3D; until: number }[] = [];
   private splats: { mesh: THREE.Object3D; until: number }[] = [];
@@ -530,6 +531,10 @@ export class ThreeView {
 
   burst(x: number, y: number, kind = ""): void {
     this.radarPing(x, y);
+    if (kind === "smoke") {
+      audio.play("empty");
+      return;
+    }
     if (kind === "hotdog" || kind === "grenade") {
       this.splatHotdog(x, y);
       audio.play("explode");
@@ -722,7 +727,7 @@ export class ThreeView {
     this.gunKick = 1;
     const mat = this.muzzleFlash.material as THREE.MeshBasicMaterial;
     const me = this.session.mine;
-    if (weapon === "grenade" || me?.weaponSlot === 4) {
+    if (weapon === "grenade" || weapon === "smoke" || me?.weaponSlot === 4) {
       mat.opacity = 0;
       this.gunKick = 1.35;
       audio.play("empty");
@@ -2583,9 +2588,11 @@ export class ThreeView {
     this.session.state?.projectiles.forEach((shot, id) => {
       projSeen.add(id);
       const hotdog = shot.kind === "grenade" || shot.weapon === "grenade";
+      const smoke = shot.kind === "smoke" || shot.weapon === "smoke";
       let node = this.projectiles.get(id);
       if (!node) {
         if (hotdog) node = this.makeHotdog();
+        else if (smoke) node = this.makeSmokeCanister();
         else if (shot.kind === "rocket" || shot.weapon === "rocket") {
           node = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.42, 8), solidMat(0xd24a2a));
           node.rotation.x = Math.PI / 2;
@@ -2603,6 +2610,9 @@ export class ThreeView {
         node.userData.spin = (node.userData.spin || 0) + 0.28;
         // Long axis along travel, end-over-end tumble
         node.rotation.set(node.userData.spin, yaw, Math.sin(node.userData.spin * 0.7) * 0.35);
+      } else if (smoke) {
+        node.userData.spin = (node.userData.spin || 0) + 0.2;
+        node.rotation.set(0.4, node.userData.spin, 0.2);
       }
     });
     for (const [id, node] of this.projectiles) {
@@ -2621,6 +2631,9 @@ export class ThreeView {
         if (pick.kind === "colt") {
           node = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.45, 10), solidMat(0xc8a050));
           node.position.y = 0.25;
+        } else if (pick.kind === "smoke") {
+          node = this.makeSmokeCanister();
+          node.scale.setScalar(1.35);
         } else {
           let hash = 0;
           for (let i = 0; i < id.length; i++) hash = (hash + id.charCodeAt(i) * (i + 3)) | 0;
@@ -2629,10 +2642,13 @@ export class ThreeView {
         this.worldRoot.add(node);
         this.pickups.set(id, node);
       }
-      const baseY = pick.kind === "colt" ? 0.25 : 0;
+      const baseY = pick.kind === "colt" ? 0.25 : pick.kind === "smoke" ? 0.28 : 0;
       node.position.set(pick.x * S, baseY, pick.y * S);
       if (pick.kind === "loco" && node.userData.spin != null) {
         node.userData.spin += 0.012;
+        node.rotation.y = node.userData.spin;
+      } else if (pick.kind === "smoke") {
+        node.userData.spin = (node.userData.spin || 0) + 0.018;
         node.rotation.y = node.userData.spin;
       }
     });
@@ -2642,6 +2658,89 @@ export class ThreeView {
         this.pickups.delete(id);
       }
     }
+
+    this.syncSmokeClouds(dt);
+  }
+
+  private syncSmokeClouds(dt: number): void {
+    const seen = new Set<string>();
+    this.session.state?.smokeClouds?.forEach((cloud, id) => {
+      seen.add(id);
+      let node = this.smokeCloudMeshes.get(id);
+      if (!node) {
+        node = this.makeSmokeCloudMesh(cloud.r * S);
+        this.worldRoot.add(node);
+        this.smokeCloudMeshes.set(id, node);
+      }
+      node.position.set(cloud.x * S, 1.1, cloud.y * S);
+      node.userData.age = (node.userData.age || 0) + dt;
+      const age = node.userData.age as number;
+      const swell = Math.min(1, age / 0.55);
+      node.scale.setScalar(0.35 + swell * 0.65);
+      node.rotation.y += dt * 0.15;
+      for (const child of node.children) {
+        const mat = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
+        if (mat?.opacity != null) mat.opacity = 0.42 + Math.sin(age * 1.4 + child.position.x) * 0.06;
+      }
+    });
+    for (const [id, node] of this.smokeCloudMeshes) {
+      if (!seen.has(id)) {
+        this.worldRoot.remove(node);
+        this.smokeCloudMeshes.delete(id);
+      }
+    }
+  }
+
+  /** Gray canister — ground pickup and in-flight smoke grenade. */
+  private makeSmokeCanister(): THREE.Group {
+    const root = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.11, 0.12, 0.42, 10),
+      solidMat(0x6a6e72),
+    );
+    body.position.y = 0.21;
+    const cap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.09, 0.11, 0.08, 10),
+      solidMat(0x3a3d40),
+    );
+    cap.position.y = 0.46;
+    const stripe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.125, 0.125, 0.06, 10),
+      solidMat(0xb8bcc0),
+    );
+    stripe.position.y = 0.28;
+    const pin = new THREE.Mesh(
+      new THREE.TorusGeometry(0.07, 0.015, 6, 10),
+      solidMat(0xd0d4d8),
+    );
+    pin.position.set(0.08, 0.48, 0);
+    pin.rotation.y = Math.PI / 2;
+    root.add(body, cap, stripe, pin);
+    return root;
+  }
+
+  private makeSmokeCloudMesh(radius: number): THREE.Group {
+    const root = new THREE.Group();
+    const mat = () => new THREE.MeshBasicMaterial({
+      color: 0x9aa0a6,
+      transparent: true,
+      opacity: 0.48,
+      depthWrite: false,
+    });
+    const blobs = [
+      [0, 0.6, 0, 1],
+      [0.55, 0.45, 0.2, 0.72],
+      [-0.5, 0.5, -0.25, 0.78],
+      [0.15, 0.85, -0.55, 0.65],
+      [-0.25, 0.35, 0.55, 0.7],
+      [0.4, 0.7, 0.45, 0.6],
+    ] as const;
+    for (const [x, y, z, s] of blobs) {
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(radius * 0.55 * s, 12, 10), mat());
+      puff.position.set(x * radius * 0.55, y * radius * 0.35, z * radius * 0.55);
+      root.add(puff);
+    }
+    return root;
   }
 
   private sample(ghost: Ghost): { x: number; y: number; z: number; aim: number; pitch: number } {

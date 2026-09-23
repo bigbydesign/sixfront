@@ -19,6 +19,7 @@ export class PlayerState extends Schema {
   @type("uint16") mag = 0;
   @type("uint16") reserve = 0;
   @type("uint8") grenades = 0;
+  @type("uint8") smokes = 0;
   @type("uint8") reloading = 0;
   @type("float32") reloadPct = 0;
   @type("float32") abilityCd = 0;
@@ -116,13 +117,21 @@ export class BarricadeState extends Schema {
   @type("string") owner = "";
 }
 
-/** World pickups: 4Loco heal cans, placed Colt 45 bottles, etc. */
+/** World pickups: 4Loco heal cans, placed Colt 45 bottles, smoke canisters, etc. */
 export class PickupState extends Schema {
   @type("string") id = "";
-  @type("string") kind = "loco"; // loco | colt
+  @type("string") kind = "loco"; // loco | colt | smoke
   @type("float32") x = 0;
   @type("float32") y = 0;
   @type("uint8") alive = 1;
+}
+
+/** Active smoke cloud — blocks distant LOS until it expires. */
+export class SmokeCloudState extends Schema {
+  @type("string") id = "";
+  @type("float32") x = 0;
+  @type("float32") y = 0;
+  @type("float32") r = 100;
 }
 
 /** Interactable house door. */
@@ -161,5 +170,6 @@ export class WarState extends Schema {
   @type({ map: ProjectileState }) projectiles = new MapSchema<ProjectileState>();
   @type({ map: BarricadeState }) barricades = new MapSchema<BarricadeState>();
   @type({ map: PickupState }) pickups = new MapSchema<PickupState>();
+  @type({ map: SmokeCloudState }) smokeClouds = new MapSchema<SmokeCloudState>();
   @type({ map: DoorState }) doors = new MapSchema<DoorState>();
 }
