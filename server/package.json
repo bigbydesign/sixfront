@@ -1,0 +1,21 @@
+{
+  "name": "@sixfront/server",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "sanity": "node -e \"require('@sixfront/shared').runSanity(); console.log('sanity ok')\""
+  },
+  "dependencies": {
+    "@sixfront/shared": "1.0.0",
+    "colyseus": "^0.15.55",
+    "@colyseus/schema": "^2.0.36",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.6.3"
+  }
+}

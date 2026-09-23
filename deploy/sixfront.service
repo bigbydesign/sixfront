@@ -1,0 +1,18 @@
+[Unit]
+Description=Big Hersh House game server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/bbdn.net/html/sixfront/server
+ExecStart=/usr/bin/node /var/www/bbdn.net/html/sixfront/server/dist/index.js
+Restart=always
+RestartSec=2
+Environment=NODE_ENV=production
+Environment=PORT=2571
+Environment=HOST=127.0.0.1
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target

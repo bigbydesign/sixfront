@@ -1,0 +1,8 @@
+Big Hersh House embeds Quake1 / WebQuake.
+
+Quake1: https://github.com/lrusso/Quake1
+Based on WebQuake: https://github.com/Triang3l/WebQuake
+Original Quake (id Software) is GPL-2.0.
+Shareware game data (Quake1Game0.pak) is id Software Quake shareware.
+
+This directory is subject to the GPL-2.0 license of the Quake / WebQuake lineage.

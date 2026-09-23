@@ -1,0 +1,16 @@
+{
+  "name": "bbdn-sixfront",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Big Hersh House — authoritative multiplayer browser game",
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "build": "npm run build -w @sixfront/shared && npm run build -w @sixfront/server && npm run build -w @sixfront/client",
+    "start": "node server/dist/index.js",
+    "sanity": "npm run build -w @sixfront/shared && npm run sanity -w @sixfront/server"
+  }
+}
