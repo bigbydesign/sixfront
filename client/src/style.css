@@ -359,6 +359,7 @@ td, th { padding: 6px 10px; text-align: left; }
 }
 .derl-bar em { margin-left: 10px; font-style: normal; color: #e0c080; font-size: 12px; }
 .chip-dog { color: #f0d080; }
+.chip-smoke { color: #c8c8c8; }
 .chip-menu {
   pointer-events: auto !important;
   cursor: pointer;
