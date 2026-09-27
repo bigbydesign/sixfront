@@ -1,4 +1,4 @@
-export type VehicleKind = "ebike" | "heli" | "car" | "atv" | "cart" | "jeep" | "moto" | "armor" | "boat";
+export type VehicleKind = "ebike" | "heli" | "car" | "jet" | "atv" | "cart" | "jeep" | "moto" | "armor" | "boat";
 
 export interface VehicleDef {
   kind: VehicleKind;
@@ -27,6 +27,10 @@ export const VEHICLES: Record<VehicleKind, VehicleDef> = {
   car: {
     kind: "car", name: "Ford Fusion", seats: 2, maxSpeed: 340, reverse: 120, accel: 210, drag: 0.72,
     turn: 1.35, hp: 420, battery: 100, drain: 0, implemented: true,
+  },
+  jet: {
+    kind: "jet", name: "Jet", seats: 1, maxSpeed: 980, reverse: 0, accel: 640, drag: 0.16,
+    turn: 2.6, hp: 90, battery: 100, drain: 0, implemented: true,
   },
   atv: { kind: "atv", name: "ATV", seats: 2, maxSpeed: 400, reverse: 120, accel: 380, drag: 0.8, turn: 2, hp: 220, battery: 100, drain: 0, implemented: false },
   cart: { kind: "cart", name: "Golf Cart", seats: 2, maxSpeed: 280, reverse: 100, accel: 260, drag: 1.1, turn: 2.2, hp: 120, battery: 100, drain: 4, implemented: false },

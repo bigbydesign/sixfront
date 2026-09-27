@@ -76,9 +76,9 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     falloffMin: 0.25, heat: 0, vehicleMul: 0.35, splash: 0, splashDamage: 0, kind: "bullet",
   },
   rocket: {
-    id: "rocket", name: "AT Launcher", auto: false, damage: 48, rpm: 40, mag: 1, reserve: 3,
-    reload: 2.6, spread: 0.02, pellets: 1, speed: 460, radius: 8, falloffStart: 2000, falloffEnd: 2000,
-    falloffMin: 1, heat: 0, vehicleMul: 3.4, splash: 78, splashDamage: 46, kind: "rocket",
+    id: "rocket", name: "Rocket Launcher", auto: false, damage: 48, rpm: 40, mag: 1, reserve: 4,
+    reload: 2.4, spread: 0.012, pellets: 1, speed: 980, radius: 10, falloffStart: 2000, falloffEnd: 2000,
+    falloffMin: 1, heat: 0, vehicleMul: 3.6, splash: 160, splashDamage: 52, kind: "rocket",
   },
   grenade: {
     id: "grenade", name: "Hotdog", auto: false, damage: 0, rpm: 50, mag: 1, reserve: 0,

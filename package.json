@@ -1,7 +1,7 @@
 {
   "name": "bbdn-sixfront",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Big Hersh House — authoritative multiplayer browser game",
   "workspaces": [
     "shared",

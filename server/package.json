@@ -1,6 +1,6 @@
 {
   "name": "@sixfront/server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -8,7 +8,7 @@
     "sanity": "node -e \"require('@sixfront/shared').runSanity(); console.log('sanity ok')\""
   },
   "dependencies": {
-    "@sixfront/shared": "1.0.0",
+    "@sixfront/shared": "1.1.0",
     "colyseus": "^0.15.55",
     "@colyseus/schema": "^2.0.36",
     "express": "^4.21.2"

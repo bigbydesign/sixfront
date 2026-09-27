@@ -20,6 +20,8 @@ export interface SyncPlayer {
   mag: number;
   reserve: number;
   grenades: number;
+  smokes: number;
+  shield: number;
   reloading: number;
   reloadPct: number;
   abilityCd: number;
@@ -55,6 +57,7 @@ export interface SyncVehicle {
   y: number;
   z: number;
   heading: number;
+  pitch: number;
   speed: number;
   battery: number;
   hp: number;
@@ -110,10 +113,24 @@ export interface SyncState {
   projectiles: { forEach(fn: (p: { id: string; x: number; y: number; z: number; vx: number; vy: number; kind: string; owner: string; weapon: string }, id: string) => void): void };
   barricades: { forEach(fn: (b: { id: string; x: number; y: number; w: number; h: number; hp: number; team: number }, id: string) => void): void };
   pickups: { forEach(fn: (p: { id: string; kind: string; x: number; y: number; alive: number }, id: string) => void): void };
+  smokeClouds: { forEach(fn: (c: { id: string; x: number; y: number; r: number }, id: string) => void): void };
   doors: { forEach(fn: (d: { id: string; open: number }, id: string) => void): void; get(id: string): { id: string; open: number } | undefined };
 }
 
 const TOKEN = "sixfront-token";
+const PASS_KEY = "sixfront-pass";
+
+export function setGamePassword(value: string): void {
+  sessionStorage.setItem(PASS_KEY, value.trim());
+}
+
+export function gamePassword(): string {
+  return sessionStorage.getItem(PASS_KEY) || "";
+}
+
+function passHeaders(): HeadersInit {
+  return { "x-game-password": gamePassword() };
+}
 
 export interface ListedRoom {
   code: string;
@@ -125,7 +142,7 @@ export interface ListedRoom {
 }
 
 export async function fetchRooms(): Promise<ListedRoom[]> {
-  const response = await fetch(`${serverUrl()}/api/rooms`);
+  const response = await fetch(`${serverUrl()}/api/rooms`, { headers: passHeaders() });
   const body = await response.json() as { rooms?: ListedRoom[]; error?: string };
   if (!response.ok) throw new Error(body.error || "Could not load games.");
   return body.rooms ?? [];
@@ -155,14 +172,20 @@ export class Session {
   }
 
   async create(options: JoinOptions): Promise<void> {
-    const response = await fetch(`${serverUrl()}/api/rooms`, { method: "POST" });
+    const response = await fetch(`${serverUrl()}/api/rooms`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...passHeaders() },
+      body: JSON.stringify({ password: gamePassword() }),
+    });
     const body = await response.json() as { roomId?: string; error?: string };
     if (!response.ok || !body.roomId) throw new Error(body.error || "Could not create a game.");
     await this.joinId(body.roomId, options);
   }
 
   async joinCode(code: string, options: JoinOptions): Promise<void> {
-    const response = await fetch(`${serverUrl()}/api/rooms/${encodeURIComponent(code.trim().toUpperCase())}`);
+    const response = await fetch(`${serverUrl()}/api/rooms/${encodeURIComponent(code.trim().toUpperCase())}`, {
+      headers: passHeaders(),
+    });
     const body = await response.json() as { roomId?: string; error?: string };
     if (!response.ok || !body.roomId) throw new Error(body.error || "No game with that code.");
     await this.joinId(body.roomId, options);
@@ -200,7 +223,7 @@ export class Session {
   }
 
   private async joinId(roomId: string, options: JoinOptions): Promise<void> {
-    await this.bind(await this.client.joinById(roomId, options));
+    await this.bind(await this.client.joinById(roomId, { ...options, password: gamePassword() }));
   }
 
   private async bind(room: Room): Promise<void> {

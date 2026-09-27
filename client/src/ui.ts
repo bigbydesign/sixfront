@@ -14,7 +14,7 @@ import {
   type Look,
   type WeaponId,
 } from "@sixfront/shared";
-import { fetchRooms, type ListedRoom, type Session, type SyncPlayer } from "./net";
+import { fetchRooms, gamePassword, setGamePassword, type ListedRoom, type Session, type SyncPlayer } from "./net";
 import { DEFAULT_BINDS, labelFor, loadPrefs, savePrefs, type Binds, type Prefs } from "./settings";
 
 const screen = () => document.getElementById("screen")!;
@@ -29,6 +29,12 @@ const feed: string[] = [];
 
 export function selection(): { identity: Identity; classId: ClassId; look: Look; team: number } {
   return { identity, classId, look, team };
+}
+
+export function capturePassword(): string {
+  const field = document.getElementById("game-pass") as HTMLInputElement | null;
+  if (field) setGamePassword(field.value);
+  return gamePassword();
 }
 
 export function setPlaying(playing: boolean): void {
@@ -52,6 +58,9 @@ export function showHome(
         <p class="eyebrow">Big by Design</p>
         <h1>BIG HERSH HOUSE</h1>
         <p class="lede">Free-for-all at Big Hersh House — Nuketown-style street fight. Derko's Attic, mid bus, eBikes.</p>
+        <label class="gate">Password
+          <input id="game-pass" type="password" autocomplete="current-password" placeholder="Enter to play" />
+        </label>
         <p class="error" id="err"></p>
         <div class="actions">
           <button id="create" class="primary">Create Game</button>
@@ -63,6 +72,15 @@ export function showHome(
         <div class="servers" id="servers"></div>
       </div>
     </div>`;
+  const pass = document.getElementById("game-pass") as HTMLInputElement;
+  pass.value = gamePassword();
+  pass.addEventListener("change", () => setGamePassword(pass.value));
+  pass.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      setGamePassword(pass.value);
+      void refreshServerList(onPick);
+    }
+  });
   document.getElementById("create")!.onclick = onCreate;
   document.getElementById("how")!.onclick = onHow;
   document.getElementById("settings")!.onclick = onSettings;
@@ -105,6 +123,12 @@ function renderServerList(rooms: ListedRoom[], onPick: (room: ListedRoom) => voi
 
 async function refreshServerList(onPick: (room: ListedRoom) => void): Promise<void> {
   const status = document.getElementById("server-status");
+  capturePassword();
+  if (!gamePassword()) {
+    renderServerList([], onPick);
+    if (status) status.textContent = "Enter the password to see open games.";
+    return;
+  }
   try {
     const rooms = await fetchRooms();
     renderServerList(rooms, onPick);
@@ -141,7 +165,7 @@ export function showHow(onBack: () => void): void {
       <h2>How to Play</h2>
       <div class="help-grid">
         <section><h3>Free for all</h3><p>Everyone fights alone at Big Hersh House. Hold Derko's Attic, contest the mid bus, or push the guest house. First to the kill target wins.</p></section>
-        <section><h3>Move and fight</h3><p>First person. Click to look. W A S D move, Left Shift run, Ctrl crouch, Space jump. Three trampolines launch you high for air shots. Aim up/down to shoot off the flat plane. 1–3 guns, 4 hotdog, 5 cheese gun. Scout sniper — RMB scopes. G throws hotdogs. F ability (or drop Colt 45 during Derl). Minus mutes music. Esc opens leave menu.</p></section>
+        <section><h3>Move and fight</h3><p>First person. Click to look. W A S D move, Left Shift run, Ctrl crouch, Space jump. Three trampolines launch you high for air shots. Aim up/down to shoot off the flat plane. 1–3 guns, 4 hotdog, 5 cheese gun. Scout sniper — RMB scopes. Gray smoke canisters sit outdoors — walk over one to pick it up, then G throws smoke. Without smoke, G still throws hotdogs; key 4 + fire always throws a hotdog. F ability (or drop Colt 45 during Derl). Minus mutes music. Esc opens leave menu.</p></section>
         <section><h3>Derl boss</h3><p>Derl enters mid-match. Cheese him (5) to weaken (−25% his damage, +25% yours). Drop Colt 45 with F for +200% confidence but −20% his attack speed and damage. Grab green 4Loco cans for +50% health.</p></section>
         <section><h3>eBikes</h3><p>Bikes are parked around the map — walk up and press E to mount. W throttle, S reverse, A/D steer, Shift boost, Space brake. Passengers shoot. Bikes never run out of power. Ramming hurts.</p></section>
         <section><h3>Helicopter</h3><p>One helicopter sits on the south street. Press E to board. Mouse looks freely. W and S fly forward and back, A and D turn the helicopter, Space climbs, Ctrl descends. Let go and it hovers. Click fires hot dogs where you look. E gets out.</p></section>
@@ -155,7 +179,7 @@ export function showHow(onBack: () => void): void {
 
 export function showSettings(onBack: () => void): void {
   const prefs = loadPrefs();
-  const bindLabel: Partial<Record<keyof Binds, string>> = { grenade: "hotdog", slot4: "hotdog slot", slot5: "cheese gun" };
+  const bindLabel: Partial<Record<keyof Binds, string>> = { grenade: "hotdog", slot4: "hotdog slot", slot5: "cheese gun", slot7: "rocket launcher" };
   const rows = (Object.keys(DEFAULT_BINDS) as (keyof Binds)[]).map((key) =>
     `<button class="bind" data-bind="${key}"><span>${bindLabel[key] ?? key}</span><strong>${labelFor(prefs.binds[key])}</strong></button>`).join("");
   screen().innerHTML = `
@@ -418,36 +442,49 @@ export function closeServerMenu(): void {
 
 export function ensureHud(): void {
   const root = hud();
-  if (root.dataset.ready === "hersh6" && document.getElementById("hud-menu")) return;
-  root.dataset.ready = "hersh6";
+  if (root.dataset.ready === "hersh8" && document.getElementById("hud-menu")) return;
+  root.dataset.ready = "hersh8";
   root.innerHTML = `
     <div class="fps-top">
+      <div class="scoreline" id="scoreline"></div>
+      <div class="fps-brand">BIG HERSH HOUSE</div>
+    </div>
+    <div class="vitals">
+      <div class="vitals-row">
+        <span class="vitals-cross">+</span>
+        <b id="q-health">100</b>
+      </div>
       <div class="hp-wrap" id="hp-wrap">
         <div class="hp-fill" id="hp-fill"></div>
       </div>
       <div class="hp-wrap bike-wrap hidden" id="bike-wrap">
         <div class="hp-fill bike-fill" id="bike-fill"></div>
       </div>
-      <div class="scoreline" id="scoreline"></div>
-      <div class="fps-brand">BIG HERSH HOUSE</div>
+      <div class="vitals-tags">
+        <div class="chip chip-shield hidden" id="q-shield">ALP</div>
+        <div class="chip chip-bike hidden" id="q-bike"></div>
+      </div>
     </div>
     <div class="feed" id="feed"></div>
     <div class="prompt" id="prompt"></div>
     <div class="specbar hidden" id="specbar"></div>
     <div class="fps-chips">
-      <button type="button" class="chip chip-menu" id="hud-menu">MENU</button>
-      <div class="chip chip-weapon"><span id="q-weapon">RIFLE</span></div>
-      <div class="chip chip-ammo"><b id="q-ammo">30</b><span id="q-reserve">90</span></div>
-      <div class="chip chip-dog">DOG <b id="q-grenades">5</b></div>
-      <div class="chip chip-ability" id="q-ability">SPRINT</div>
-      <div class="chip chip-bike hidden" id="q-bike"></div>
+      <div class="arms">
+        <div class="arms-name" id="q-weapon">RIFLE</div>
+        <div class="chip-ammo"><b id="q-ammo">30</b><span id="q-reserve">90</span></div>
+      </div>
+      <div class="arms-kit">
+        <div class="chip chip-dog">DOG <b id="q-grenades">5</b></div>
+        <div class="chip chip-smoke">SMOKE <b id="q-smokes">0</b></div>
+        <div class="chip chip-ability" id="q-ability">SPRINT</div>
+        <button type="button" class="chip chip-menu" id="hud-menu">MENU</button>
+      </div>
     </div>
     <div class="objectives" id="objs"></div>
     <div class="death hidden" id="death"></div>
     <div class="board hidden" id="board"></div>
     <div class="pause hidden" id="pause"></div>
     <div id="hurt"></div>
-    <span id="q-health" class="hidden">100</span>
     <span id="q-armor" class="hidden">0</span>
     <span id="q-armor-label" class="hidden">ARMOR</span>`;
 }
@@ -505,12 +542,21 @@ export function updateHud(session: Session, flags: { prompt: string; pause: bool
   ammoEl.classList.toggle("empty", !me.reloading && mag === 0);
   document.getElementById("q-reserve")!.textContent = me.reloading ? "RELOAD" : String(reserve);
   document.getElementById("q-grenades")!.textContent = String(me.grenades ?? 0);
+  const smokeEl = document.getElementById("q-smokes");
+  if (smokeEl) smokeEl.textContent = String(me.smokes ?? 0);
+  const shieldEl = document.getElementById("q-shield");
+  if (shieldEl) {
+    const left = Math.ceil(me.shield ?? 0);
+    shieldEl.classList.toggle("hidden", left <= 0);
+    shieldEl.textContent = left > 0 ? `ALP ${left}` : "ALP";
+  }
 
   const def = CLASSES[me.classId as ClassId];
   const slotted = def ? slotWeapon(def, me.weaponSlot || 1) : null;
   const shortWeapon =
     me.weaponSlot === 4 ? "HOTDOG"
       : me.weaponSlot === 5 ? "CHEESE"
+      : me.weaponSlot === 7 ? "ROCKET"
       : slotted === "barricade" ? "BARRICADE"
         : slotted && slotted in WEAPONS ? slotted.toUpperCase()
           : (def?.name ?? me.classId).toUpperCase();

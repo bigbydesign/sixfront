@@ -13,12 +13,18 @@ import {
   showError,
   showHome,
   showHow,
+  capturePassword,
   closeServerMenu,
   setLeaveMatch,
   setMatchMenu,
   showLobby,
   showSettings,
 } from "./ui";
+
+const GUN_SOUND: Record<string, string> = {
+  pistol: "pistol", rifle: "rifle", carbine: "rifle", scout: "rifle", smg: "smg", lmg: "lmg",
+  shotgun: "shotgun", sniper: "sniper", rocket: "rocket", cheese: "smg",
+};
 
 const session = new Session();
 let view: ThreeView | null = null;
@@ -106,6 +112,10 @@ function home(): void {
 
 async function create(): Promise<void> {
   if (booting) return;
+  if (!capturePassword()) {
+    showError("Enter the server password.");
+    return;
+  }
   booting = true;
   try {
     const pick = selection();
@@ -121,6 +131,10 @@ async function create(): Promise<void> {
 
 async function joinRoom(room: { roomId: string }): Promise<void> {
   try {
+    if (!capturePassword()) {
+      showError("Enter the server password.");
+      return;
+    }
     const pick = selection();
     await session.joinRoom(room.roomId, { ...pick, name: pick.identity });
   } catch (error) {
@@ -160,16 +174,25 @@ function handleEvent(evt: GameEvent): void {
       flashHurt();
     }
   }
-  if (evt.t === "hit" && evt.attacker === session.me) audio.play("hit");
+  if (evt.t === "hit" && evt.attacker === session.me) {
+    audio.play(evt.head ? "headshot" : "hit");
+    view?.hitMarker(evt.head, false);
+  }
   if (evt.t === "explode") view?.burst(evt.x, evt.y, evt.kind);
-    if (evt.t === "shoot") {
-    view?.tracer(evt.x, evt.y, evt.x2, evt.y2, evt.z1 ?? 74, evt.z2 ?? 74);
+  if (evt.t === "shoot") {
+    const mine = evt.id === session.me;
+    view?.tracer(evt.x, evt.y, evt.x2, evt.y2, evt.z1 ?? 74, evt.z2 ?? 74, mine);
     view?.radarPing(evt.x, evt.y);
-    if (evt.id === session.me) view?.onShotFeedback(evt.weapon);
-    else audio.play(evt.weapon === "rocket" ? "rocket" : evt.weapon === "grenade" ? "empty" : "shot", pan(evt.x));
+    if (mine) view?.onShotFeedback(evt.weapon);
+    else if (evt.weapon === "grenade" || evt.weapon === "smoke") audio.play("empty", pan(evt.x));
+    else audio.gun(GUN_SOUND[evt.weapon] ?? "rifle", pan(evt.x), view?.distanceTo(evt.x, evt.y) ?? 0);
   }
   if (evt.t === "notice") pushFeed(evt.text);
   if (evt.t === "dead" && evt.id === session.me) audio.play("hurt");
+  if (evt.t === "dead" && evt.by === session.me && evt.id !== session.me) {
+    audio.play("kill");
+    view?.hitMarker(true, true);
+  }
   if (evt.t === "ability" && evt.kind === "loco") {
     audio.play("loco", evt.id === session.me ? 0 : pan(0));
   }

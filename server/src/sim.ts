@@ -16,6 +16,8 @@ import {
   doorAt,
   ladderAt,
   onRoofWalk,
+  roofAt,
+  roofHeight,
   walkSolids,
   getMap,
   MAP_SCALE,
@@ -31,6 +33,7 @@ import {
   segmentHitsRect,
   stepBike,
   stepHeli,
+  stepJet,
   SIM_DT,
   stepInfantry,
   surfaceAt,
@@ -42,7 +45,7 @@ import {
   type MoveInput,
   type WeaponId,
 } from "@sixfront/shared";
-import { BarricadeState, DoorState, ObjectiveState, PickupState, PlayerState, ProjectileState, TowerState, VehicleState, WarState } from "./schema";
+import { BarricadeState, DoorState, ObjectiveState, PickupState, PlayerState, ProjectileState, SmokeCloudState, TowerState, VehicleState, WarState } from "./schema";
 import {
   CHEESE_BUFF_SEC,
   CHEESE_WEAKEN_SEC,
@@ -61,6 +64,14 @@ import {
   CHEESE_CURL_SPAWN,
   isCheeseCurl,
 } from "./cheeseCurl";
+import {
+  SMOKE_CARRY_MAX,
+  SMOKE_DURATION,
+  SMOKE_NEAR,
+  SMOKE_RADIUS,
+  SMOKE_RESPAWN,
+  SMOKE_SPOTS,
+} from "./smoke";
 
 interface RT {
   mags: number[];
@@ -91,6 +102,7 @@ interface RT {
   reviveLeft: number;
   noiseLeft: number;
   nadeUsed: number;
+  smokes: number;
   colt45: number;
   cheeseWeakenLeft: number;
   damageBuffLeft: number;
@@ -98,6 +110,9 @@ interface RT {
   lastHitName: string;
   lastHitWeapon: string;
   lastHitDist: number;
+  wildLeft: number;
+  trampLatch: number;
+  shieldLeft: number;
 }
 
 interface Proj {
@@ -127,6 +142,9 @@ interface BikeRT {
   homeX: number;
   homeY: number;
   vz: number;
+  yawRate: number;
+  pitch: number;
+  pitchRate: number;
   rocketCd: number;
 }
 
@@ -150,6 +168,14 @@ export class WarSim {
   derlConfidence = 1;
   private cheeseGoal = { x: 0, y: 0, until: 0 };
   private readonly spotUntil = new Map<string, number>();
+  /** Smoke canister pad → seconds until respawn while alive=0. */
+  private readonly smokeRespawn = new Map<string, number>();
+  /** Active smoke clouds with remaining lifetime (schema mirrors x/y/r). */
+  private readonly smokeTtl = new Map<string, number>();
+  private holdAcc = 0;
+  /** Seconds until the roof rocket comes back. 0 means it is sitting on the roof or someone is carrying it. */
+  private rocketBack = 0;
+  private rocketHolder = "";
 
   constructor(
     readonly state: WarState,
@@ -318,6 +344,8 @@ export class WarSim {
     this.clearProjectiles();
     this.state.barricades.clear();
     this.state.pickups.clear();
+    this.clearSmokeClouds();
+    this.smokeRespawn.clear();
     this.resetVehicles();
     this.resetDoors();
     this.resetObjectives();
@@ -325,6 +353,9 @@ export class WarSim {
     this.removeDerl();
     this.removeCheeseCurl();
     this.spawnLocoPickups();
+    this.spawnSmokePickups();
+    this.spawnAlp();
+    this.spawnRoofRocket();
     this.derlSpawnAt = this.clock - DERL_SPAWN_DELAY;
     this.derlConfidence = 1;
     this.state.derlAlive = 0;
@@ -346,7 +377,7 @@ export class WarSim {
     }
     this.removeBots();
     this.state.phase = "play";
-    this.emit({ t: "notice", id: "", text: "Fight's on. 4Loco is on the map." });
+    this.emit({ t: "notice", id: "", text: "Hold the roof or the helicopter to score. The rocket is on the roof." });
     return null;
   }
 
@@ -355,6 +386,8 @@ export class WarSim {
     this.clearProjectiles();
     this.state.barricades.clear();
     this.state.pickups.clear();
+    this.clearSmokeClouds();
+    this.smokeRespawn.clear();
     this.resetVehicles();
     this.resetDoors();
     this.resetObjectives();
@@ -375,6 +408,7 @@ export class WarSim {
       p.seat = -1;
       p.ready = 0;
       p.respawnLeft = 0;
+      p.smokes = 0;
     });
   }
 
@@ -395,8 +429,11 @@ export class WarSim {
     this.moveAll(dt);
     this.combat(dt);
     this.stepPickups();
+    this.stepSmokeClouds(dt);
     this.capture(dt);
     this.scoreTick(dt);
+    this.holdTick(dt);
+    this.syncBots();
     this.life(dt);
     this.visibility();
     this.syncAll();
@@ -451,8 +488,8 @@ export class WarSim {
   private freshRT(classId: ClassId): RT {
     const def = CLASSES[classId];
     const slots = [def.primary, def.secondary, def.special];
-    const mags = [0, 0, 0, 0, WEAPONS.cheese.mag];
-    const reserves = [0, 0, 0, 0, WEAPONS.cheese.reserve];
+    const mags = [0, 0, 0, 0, WEAPONS.cheese.mag, 0, 0];
+    const reserves = [0, 0, 0, 0, WEAPONS.cheese.reserve, 0, 0];
     slots.forEach((w, i) => {
       if (w && w !== "barricade") {
         mags[i] = WEAPONS[w].mag;
@@ -464,8 +501,8 @@ export class WarSim {
       grenadeCd: 0, abilityCd: 0, abilityLeft: 0, suppressLeft: 0, pulseLeft: 0, lockLeft: 0, sprintLeft: 0,
       slowLeft: 0, ramLeft: 0, barricades: 2, interactLatch: false, abilityLatch: false, fireLatch: false,
       grenadeLatch: false, input: emptyInput(), livesLeft: 0, downedLeft: 0, invulnLeft: 0,
-      reviveLeft: 0, noiseLeft: 0, nadeUsed: 0, colt45: 0, cheeseWeakenLeft: 0, damageBuffLeft: 0,
-      lastHitId: "", lastHitName: "", lastHitWeapon: "", lastHitDist: 0,
+      reviveLeft: 0, noiseLeft: 0, nadeUsed: 0, smokes: 0, colt45: 0, cheeseWeakenLeft: 0, damageBuffLeft: 0,
+      lastHitId: "", lastHitName: "", lastHitWeapon: "", lastHitDist: 0, wildLeft: 0, trampLatch: 0, shieldLeft: 0,
     };
   }
 
@@ -489,8 +526,30 @@ export class WarSim {
       v.base = src.base ? 1 : 0;
       v.alive = 1;
       this.state.vehicles.set(src.id, v);
-      this.bikes.set(src.id, { boostLeft: 0, boostCd: 0, homeX: src.x, homeY: src.y, vz: 0, rocketCd: 0 });
+      this.bikes.set(src.id, { boostLeft: 0, boostCd: 0, homeX: src.x, homeY: src.y, vz: 0, yawRate: 0, pitch: 0, pitchRate: 0, rocketCd: 0 });
     }
+    this.spawnJet();
+  }
+
+  /** North end of the street, nose pointed down the road. One seat. */
+  private spawnJet(): void {
+    const v = new VehicleState();
+    v.id = "jet-1";
+    v.kind = "jet";
+    v.x = 100 * MAP_SCALE * 48;
+    v.y = 40 * MAP_SCALE * 48;
+    v.z = 0;
+    v.heading = Math.PI / 2;
+    v.hp = VEHICLES.jet.hp;
+    v.maxHp = VEHICLES.jet.hp;
+    v.battery = 100;
+    v.seats = 1;
+    v.base = 1;
+    v.alive = 1;
+    this.state.vehicles.set(v.id, v);
+    this.bikes.set(v.id, {
+      boostLeft: 0, boostCd: 0, homeX: v.x, homeY: v.y, vz: 0, yawRate: 0, pitch: 0, pitchRate: 0, rocketCd: 0,
+    });
   }
 
   private resetObjectives(): void {
@@ -505,6 +564,7 @@ export class WarSim {
   }
 
   private syncBots(): void {
+    const humans = this.humans().length;
     const want = 0;
     const drop: string[] = [];
     this.state.players.forEach((p) => {
@@ -531,7 +591,7 @@ export class WarSim {
     p.id = id;
     p.bot = 1;
     p.identity = "";
-    p.name = `${CLASSES[classId].name} Bot`;
+    p.name = index === 0 ? "Yard" : "Roof";
     p.classId = classId;
     const teamMode = this.settings.teamMode;
     p.team = teamMode === "ffa" ? (index % 6) : teamMode === "three" ? (index % 3) : (index % 2);
@@ -594,6 +654,7 @@ export class WarSim {
     p.vehicleId = "";
     p.seat = -1;
     p.weaponSlot = 1;
+    p.smokes = 0;
     p.killerName = "";
     p.respawnLeft = 0;
     // Bikes stay parked on the map — walk up and press E to mount.
@@ -683,6 +744,7 @@ export class WarSim {
       p.sprinting = rt.input.sprint || rt.sprintLeft > 0 ? 1 : 0;
       p.floorZ = rt.input.floorZ;
       p.jumpZ = rt.input.jumpZ;
+      this.noteTramp(p, rt);
     });
 
     this.state.vehicles.forEach((bike) => {
@@ -691,18 +753,25 @@ export class WarSim {
       if (!bike.alive) {
         if (bike.base && bike.respawn > 0) {
           bike.respawn -= dt;
-          if (bike.respawn <= 0) {
-            bike.alive = 1;
-            bike.hp = bike.maxHp;
-            bike.battery = 100;
-            bike.x = br.homeX;
-            bike.y = br.homeY;
-            bike.z = 0;
-            bike.speed = 0;
-            br.vz = 0;
-            bike.driver = "";
-            bike.passenger = "";
-          }
+            if (bike.respawn <= 0) {
+              bike.alive = 1;
+              bike.hp = bike.maxHp;
+              bike.battery = 100;
+              bike.x = br.homeX;
+              bike.y = br.homeY;
+              bike.z = 0;
+              bike.speed = 0;
+              br.vz = 0;
+              br.yawRate = 0;
+              br.pitch = 0;
+              br.pitchRate = 0;
+              bike.pitch = 0;
+              bike.heading = bike.kind === "jet" ? Math.PI / 2 : 0;
+              bike.driver = "";
+              bike.passenger = "";
+              if (bike.kind === "heli") this.emit({ t: "notice", id: "", text: "Helicopter is back." });
+              if (bike.kind === "jet") this.emit({ t: "notice", id: "", text: "Jet is back on the street." });
+            }
         }
         return;
       }
@@ -726,9 +795,27 @@ export class WarSim {
         bike.y = heli.y;
         bike.heading = heli.heading;
         bike.speed = heli.speed;
+      } else if (bike.kind === "jet") {
+        const jet = {
+          x: bike.x, y: bike.y, z: bike.z, vz: br.vz, heading: bike.heading,
+          yawRate: br.yawRate, pitch: br.pitch, pitchRate: br.pitchRate, speed: bike.speed, crashed: false,
+        };
+        stepJet(jet, input, env, !driver);
+        br.vz = jet.vz;
+        br.yawRate = jet.yawRate;
+        br.pitch = jet.pitch;
+        br.pitchRate = jet.pitchRate;
+        bike.x = jet.x;
+        bike.y = jet.y;
+        bike.z = jet.z;
+        bike.heading = jet.heading;
+        bike.speed = jet.speed;
+        bike.pitch = jet.pitch;
+        if (jet.x < 70 || jet.y < 70 || jet.x > this.map.width - 70 || jet.y > this.map.height - 70) jet.crashed = true;
+        if (jet.crashed) this.destroyBike(bike, driver?.id ?? "");
       } else if (driver) stepBike(body, input, bike.seats, env, bike.kind === "car" ? "car" : "ebike");
       else body.speed *= Math.max(0, 1 - 2.2 * dt);
-      if (bike.kind !== "heli") {
+      if (bike.kind !== "heli" && bike.kind !== "jet") {
         br.boostLeft = body.boostLeft;
         br.boostCd = body.boostCd;
         bike.x = body.x;
@@ -759,7 +846,7 @@ export class WarSim {
       const seat = seatPoint(bike.x, bike.y, bike.heading, p.seat);
       p.x = seat.x;
       p.y = seat.y;
-      p.floorZ = bike.kind === "heli" ? bike.z : 0;
+      p.floorZ = bike.kind === "heli" || bike.kind === "jet" ? bike.z : 0;
       const rt = this.rt.get(p.id);
       if (rt) {
         p.aim = this.aimAt(p.x, p.y, rt.input);
@@ -810,7 +897,7 @@ export class WarSim {
       if (rt && rt.ramLeft > 0) return;
       const dmg = Math.round(Math.min(72, 10 + (speed - 120) * 0.16));
       const before = p.hp;
-      const label = bike.kind === "heli" ? "Helicopter" : bike.kind === "car" ? "Ford Fusion" : bike.kind === "ebike" ? "eBike" : "Vehicle";
+      const label = bike.kind === "heli" ? "Helicopter" : bike.kind === "jet" ? "Jet" : bike.kind === "car" ? "Ford Fusion" : bike.kind === "ebike" ? "eBike" : "Vehicle";
       const landed = this.hurt(p, dmg, driver, label, bike.x, bike.y, false, true);
       if (!landed) return;
       if (rt) rt.ramLeft = 0.55;
@@ -833,7 +920,7 @@ export class WarSim {
       if (!bike.alive || bike.z > 64) return;
       const dx = bike.x - p.x;
       const dy = bike.y - p.y;
-      const reach = bike.kind === "heli" ? 78 : bike.kind === "car" ? 96 : 54;
+      const reach = bike.kind === "heli" ? 78 : bike.kind === "jet" ? 96 : bike.kind === "car" ? 96 : 54;
       const d = dx * dx + dy * dy;
       if (d < reach * reach && d < bestD) { best = bike; bestD = d; }
     });
@@ -917,6 +1004,8 @@ export class WarSim {
       rt.invulnLeft = Math.max(0, rt.invulnLeft - dt);
       rt.cheeseWeakenLeft = Math.max(0, rt.cheeseWeakenLeft - dt);
       rt.damageBuffLeft = Math.max(0, rt.damageBuffLeft - dt);
+      rt.wildLeft = Math.max(0, rt.wildLeft - dt);
+      rt.shieldLeft = Math.max(0, rt.shieldLeft - dt);
       if (p.alive !== 1) {
         rt.fireLatch = rt.input.fire;
         return;
@@ -937,7 +1026,9 @@ export class WarSim {
           if (def.grenades > 0) p.weaponSlot = 4;
         } else if (rt.input.slot === 5) {
           p.weaponSlot = 5; // cheese gun
-        } else {
+        } else if (rt.input.slot === 7) {
+          if ((rt.mags[6] ?? 0) + (rt.reserves[6] ?? 0) > 0) p.weaponSlot = 7;
+        } else if (rt.input.slot <= 3) {
           const item = rt.input.slot === 1 ? def.primary : rt.input.slot === 2 ? def.secondary : def.special;
           if (item) p.weaponSlot = rt.input.slot;
         }
@@ -1238,7 +1329,7 @@ export class WarSim {
       rt.noiseLeft = 1.4;
       rt.heat = Math.min(0.05, rt.heat + weapon.heat);
       for (let pellet = 0; pellet < weapon.pellets; pellet++) {
-        const ang = p.aim;
+        const ang = p.aim + (rt.wildLeft > 0 ? Math.sin(this.tickCount * 1.7 + pellet) * 0.22 : 0);
         if (weapon.kind === "bullet") {
           const end = this.traceShot(p, ang, weapon);
           this.emit({
@@ -1256,7 +1347,7 @@ export class WarSim {
           id, x: p.x + Math.cos(ang) * 18, y: p.y + Math.sin(ang) * 18, z: stance.eye * 0.85,
           vz: Math.sin(pitch) * speed, vx: Math.cos(ang) * speed * cosP, vy: Math.sin(ang) * speed * cosP,
           team: p.team, ownerId: p.id,
-          weapon: weapon.id, ttl: 1.6, radius: weapon.radius,
+          weapon: weapon.id, ttl: weapon.kind === "rocket" ? 2.6 : 1.6, radius: weapon.radius,
           damage: weapon.damage, splash: weapon.splash, splashDamage: weapon.splashDamage,
           vehicleMul: weapon.vehicleMul * (rt.lockLeft > 0 && weapon.id === "rocket" ? 1.2 : 1),
           kind: weapon.kind,
@@ -1305,6 +1396,11 @@ export class WarSim {
   private throwGrenade(p: PlayerState, rt: RT): void {
     const gKey = rt.input.grenade && !rt.grenadeLatch;
     const gFire = p.weaponSlot === 4 && rt.input.fire && !rt.fireLatch;
+    // G with a smoke canister → smoke. Hotdog stays on key 4 (LMB) and on G when empty-handed.
+    if (gKey && rt.smokes > 0) {
+      this.throwSmoke(p, rt);
+      return;
+    }
     const rising = gKey || gFire;
     if (!rising || rt.grenadeCd > 0) return;
     if (this.grenadesLeft(p, rt) <= 0) return;
@@ -1341,6 +1437,41 @@ export class WarSim {
     this.emit({ t: "shoot", id: p.id, x: p.x, y: p.y, aim: p.aim, weapon: "grenade", x2: proj.x, y2: proj.y });
   }
 
+  /** Arc throw — pops a vision-blocking smoke cloud on first ground contact. */
+  private throwSmoke(p: PlayerState, rt: RT): void {
+    if (rt.grenadeCd > 0 || rt.smokes <= 0) return;
+    rt.grenadeCd = 0.55;
+    rt.smokes -= 1;
+    p.smokes = rt.smokes;
+    const g = WEAPONS.grenade;
+    const id = `sm${this.seq++}`;
+    const hand = 40;
+    const stance = this.stanceOf(rt, p.seat >= 0);
+    const loft = 290 + Math.sin(rt.input.pitch) * 180;
+    const speed = g.speed * Math.cos(rt.input.pitch);
+    const proj: Proj = {
+      id,
+      x: p.x + Math.cos(p.aim) * hand,
+      y: p.y + Math.sin(p.aim) * hand,
+      z: stance.eye,
+      vz: loft,
+      vx: Math.cos(p.aim) * speed,
+      vy: Math.sin(p.aim) * speed,
+      team: p.team, ownerId: p.id, weapon: "smoke", ttl: 3.2, radius: 6, damage: 0,
+      splash: 0, splashDamage: 0, vehicleMul: 0, kind: "smoke",
+      bounces: 0,
+    };
+    this.projs.push(proj);
+    const view = new ProjectileState();
+    view.id = id;
+    view.kind = "smoke";
+    view.owner = p.id;
+    view.team = p.team;
+    view.weapon = "smoke";
+    this.state.projectiles.set(id, view);
+    this.emit({ t: "shoot", id: p.id, x: p.x, y: p.y, aim: p.aim, weapon: "smoke", x2: proj.x, y2: proj.y });
+  }
+
   private grenadesLeft(p: PlayerState, rt: RT): number {
     const max = CLASSES[p.classId as ClassId].grenades;
     return Math.max(0, max - rt.nadeUsed);
@@ -1365,6 +1496,7 @@ export class WarSim {
   }
 
   private weaponInSlot(p: PlayerState, slot: number): import("@sixfront/shared").WeaponDef | null {
+    if (slot === 7) return WEAPONS.rocket;
     if (slot === 5) return WEAPONS.cheese;
     if (slot === 4) return null;
     const def = CLASSES[p.classId as ClassId];
@@ -1379,6 +1511,17 @@ export class WarSim {
       const ox = proj.x;
       const oy = proj.y;
       proj.ttl -= dt;
+      if (proj.kind === "smoke") {
+        proj.vz -= 580 * dt;
+        proj.z += proj.vz * dt;
+        proj.x += proj.vx * dt;
+        proj.y += proj.vy * dt;
+        if (proj.z <= 3 || proj.ttl <= 0) {
+          this.deploySmoke(proj.x, proj.y);
+          this.removeProj(i);
+        }
+        continue;
+      }
       if (proj.kind === "grenade") {
         proj.vz -= 580 * dt;
         proj.z += proj.vz * dt;
@@ -1413,7 +1556,7 @@ export class WarSim {
       if (proj.kind === "rocket") proj.z += proj.vz * dt;
       let dead = proj.ttl <= 0 || proj.x < 0 || proj.y < 0 || proj.x > this.map.width || proj.y > this.map.height;
       if (!dead && proj.kind === "rocket" && proj.z <= 6) dead = true;
-      if (!dead && blockedAt(this.map, proj.x, proj.y)) dead = true;
+      if (!dead && blockedAt(this.map, proj.x, proj.y) && !(proj.kind === "rocket" && proj.z > 170)) dead = true;
       if (!dead && proj.kind === "rocket" && proj.z <= 170) {
         for (const solid of this.map.solids) {
           if (segmentHitsRect(ox, oy, proj.x, proj.y, solid)) { dead = true; break; }
@@ -1478,8 +1621,10 @@ export class WarSim {
     if (hit) return true;
     this.state.vehicles.forEach((bike) => {
       if (hit || !bike.alive) return;
-      if (segmentHitsCircle(ox, oy, proj.x, proj.y, bike.x, bike.y, 20)) {
+      const reach = bike.kind === "heli" ? 78 : 22;
+      if (segmentHitsCircle(ox, oy, proj.x, proj.y, bike.x, bike.y, reach)) {
         if (bike.driver === proj.ownerId || bike.passenger === proj.ownerId) return;
+        if (proj.kind === "rocket" && bike.kind === "heli" && Math.abs(proj.z - bike.z) > 110) return;
         if (proj.kind === "rocket") {
           hit = true;
           return;
@@ -1527,15 +1672,30 @@ export class WarSim {
     bike.driver = "";
     bike.passenger = "";
     this.emit({ t: "explode", x: bike.x, y: bike.y, kind: "bike" });
+    const attacker = this.state.players.get(ownerId);
     for (const rid of riders) {
       const rider = this.state.players.get(rid);
       if (!rider) continue;
       rider.vehicleId = "";
       rider.seat = -1;
-      const attacker = this.state.players.get(ownerId);
-      this.hurt(rider, 22, attacker, "ebike", bike.x, bike.y, false);
+      if (bike.kind !== "jet") this.hurt(rider, 22, attacker, "ebike", bike.x, bike.y, false);
     }
-    if (bike.base) bike.respawn = 22;
+    if (bike.kind === "heli") {
+      bike.respawn = 45;
+      this.state.players.forEach((p) => {
+        if (p.alive !== 1 || riders.includes(p.id)) return;
+        const d = Math.hypot(p.x - bike.x, p.y - bike.y);
+        if (d < 150) this.hurt(p, 48 * (1 - d / 150), attacker, "heli", bike.x, bike.y, false, true);
+      });
+      this.emit({ t: "notice", id: "", text: "Helicopter down. It stays down." });
+    } else if (bike.kind === "jet") {
+      bike.respawn = 12;
+      for (const rid of riders) {
+        const rider = this.state.players.get(rid);
+        if (rider && rider.alive === 1) this.hurt(rider, 40, attacker, "Jet", bike.x, bike.y, false, true);
+      }
+      this.emit({ t: "notice", id: "", text: "Jet crashed." });
+    } else if (bike.base) bike.respawn = 22;
   }
 
   private hurt(
@@ -1567,6 +1727,7 @@ export class WarSim {
     }
     const def = CLASSES[target.classId as ClassId] ?? CLASSES.rifleman;
     let raw = amount * def.armor;
+    if (rt.shieldLeft > 0) raw *= 0.65;
     if (attacker && isDerl(attacker.id)) {
       const aRt = this.rt.get(attacker.id);
       if (aRt && aRt.cheeseWeakenLeft > 0) raw *= 0.75; // Derl attacks −25% when cheesed
@@ -1706,6 +1867,50 @@ export class WarSim {
     });
   }
 
+  private spawnSmokePickups(): void {
+    this.smokeRespawn.clear();
+    SMOKE_SPOTS.forEach((spot, i) => {
+      if (blockedAt(this.map, spot.x, spot.y)) return;
+      const p = new PickupState();
+      p.id = `smoke-${i}`;
+      p.kind = "smoke";
+      p.x = spot.x;
+      p.y = spot.y;
+      p.alive = 1;
+      this.state.pickups.set(p.id, p);
+    });
+  }
+
+  private deploySmoke(x: number, y: number): void {
+    const id = `cloud-${this.seq++}`;
+    const cloud = new SmokeCloudState();
+    cloud.id = id;
+    cloud.x = x;
+    cloud.y = y;
+    cloud.r = SMOKE_RADIUS;
+    this.state.smokeClouds.set(id, cloud);
+    this.smokeTtl.set(id, SMOKE_DURATION);
+    this.emit({ t: "explode", x, y, kind: "smoke" });
+  }
+
+  private stepSmokeClouds(dt: number): void {
+    const drop: string[] = [];
+    this.smokeTtl.forEach((left, id) => {
+      const next = left - dt;
+      if (next <= 0) drop.push(id);
+      else this.smokeTtl.set(id, next);
+    });
+    for (const id of drop) {
+      this.smokeTtl.delete(id);
+      this.state.smokeClouds.delete(id);
+    }
+  }
+
+  private clearSmokeClouds(): void {
+    this.smokeTtl.clear();
+    this.state.smokeClouds.clear();
+  }
+
   private spawnDerl(): void {
     if (this.state.players.has(DERL_ID)) return;
     const p = new PlayerState();
@@ -1773,8 +1978,22 @@ export class WarSim {
 
   private stepPickups(): void {
     const remove: string[] = [];
+    this.smokeRespawn.forEach((left, id) => {
+      const next = left - TICK;
+      if (next <= 0) {
+        const pick = this.state.pickups.get(id);
+        if (pick && (pick.kind === "smoke" || pick.kind === "alp" || pick.kind === "rocket")) pick.alive = 1;
+        this.smokeRespawn.delete(id);
+      } else {
+        this.smokeRespawn.set(id, next);
+      }
+    });
     this.state.pickups.forEach((pick, id) => {
-      if (!pick.alive) { remove.push(id); return; }
+      if (!pick.alive) {
+        // Smoke pads stay in the map and respawn; loco/colt are one-shot.
+        if (pick.kind !== "smoke" && pick.kind !== "alp" && pick.kind !== "rocket") remove.push(id);
+        return;
+      }
       if (pick.kind === "loco") {
         this.state.players.forEach((p) => {
           if (!pick.alive || p.alive !== 1 || isDerl(p.id)) return;
@@ -1796,6 +2015,47 @@ export class WarSim {
             remove.push(id);
           }
         }
+      } else if (pick.kind === "smoke") {
+        this.state.players.forEach((p) => {
+          if (!pick.alive || p.alive !== 1 || isDerl(p.id) || isCheeseCurl(p.id)) return;
+          const rt = this.rt.get(p.id);
+          if (!rt || rt.smokes >= SMOKE_CARRY_MAX) return;
+          const d = (p.x - pick.x) ** 2 + (p.y - pick.y) ** 2;
+          if (d > 38 * 38) return;
+          rt.smokes += 1;
+          p.smokes = rt.smokes;
+          pick.alive = 0;
+          this.smokeRespawn.set(id, SMOKE_RESPAWN);
+          this.emit({ t: "notice", id: p.id, text: "Picked up a smoke grenade" });
+        });
+      } else if (pick.kind === "alp") {
+        this.state.players.forEach((p) => {
+          if (!pick.alive || p.alive !== 1) return;
+          const rt = this.rt.get(p.id);
+          if (!rt || rt.shieldLeft > 8) return;
+          const d = (p.x - pick.x) ** 2 + (p.y - pick.y) ** 2;
+          if (d > 40 * 40) return;
+          rt.shieldLeft = 22;
+          p.shield = rt.shieldLeft;
+          pick.alive = 0;
+          this.smokeRespawn.set(id, 16);
+          this.emit({ t: "notice", id: p.id, text: "ALP shield. You take 35% less damage." });
+        });
+      } else if (pick.kind === "rocket") {
+        this.state.players.forEach((p) => {
+          if (!pick.alive || p.alive !== 1) return;
+          const rt = this.rt.get(p.id);
+          if (!rt) return;
+          const d = (p.x - pick.x) ** 2 + (p.y - pick.y) ** 2;
+          if (d > 40 * 40) return;
+          rt.mags[6] = WEAPONS.rocket.mag;
+          rt.reserves[6] = WEAPONS.rocket.reserve;
+          p.weaponSlot = 7;
+          pick.alive = 0;
+          this.rocketHolder = p.id;
+          this.rocketBack = 0;
+          this.emit({ t: "notice", id: p.id, text: "Rocket launcher. Two hits drop the helicopter." });
+        });
       }
     });
     for (const id of remove) this.state.pickups.delete(id);
@@ -1807,6 +2067,11 @@ export class WarSim {
     target.hp = 0;
     target.deaths += 1;
     rt.downedLeft = 0;
+    rt.shieldLeft = 0;
+    if (this.rocketHolder === target.id) {
+      this.rocketHolder = "";
+      this.rocketBack = 60;
+    }
     this.dismount(target.id);
     const attacker = rt.lastHitId ? this.state.players.get(rt.lastHitId) : undefined;
     if (attacker && attacker.id !== target.id) {
@@ -1933,6 +2198,83 @@ export class WarSim {
     return 10 + (p.team % 20);
   }
 
+  private spawnAlp(): void {
+    const spots = [
+      [62, 48], [138, 48], [62, 150], [138, 150],
+    ];
+    spots.forEach(([gx, gy], i) => {
+      const x = gx * MAP_SCALE * 48;
+      const y = gy * MAP_SCALE * 48;
+      if (blockedAt(this.map, x, y)) return;
+      const p = new PickupState();
+      p.id = `alp-${i}`;
+      p.kind = "alp";
+      p.x = x;
+      p.y = y;
+      p.alive = 1;
+      this.state.pickups.set(p.id, p);
+    });
+  }
+
+  private spawnRoofRocket(): void {
+    const p = new PickupState();
+    p.id = "rocket-roof";
+    p.kind = "rocket";
+    p.x = this.map.hersh.cx;
+    p.y = this.map.hersh.cy;
+    p.alive = 1;
+    this.state.pickups.set(p.id, p);
+    this.rocketBack = 0;
+    this.rocketHolder = "";
+  }
+
+  private onHershRoof(p: PlayerState): boolean {
+    if (p.alive !== 1 || p.seat >= 0) return false;
+    const roof = roofAt(this.map, p.x, p.y, 0);
+    if (!roof || roof.z1 == null) return false;
+    return Math.abs(p.floorZ - roofHeight(roof, p.x, p.y)) <= 56;
+  }
+
+  private holdTick(dt: number): void {
+    if (this.warmup > 0 || this.state.phase !== "play") return;
+    if (this.rocketBack > 0) {
+      this.rocketBack -= dt;
+      if (this.rocketBack <= 0) {
+        const pad = this.state.pickups.get("rocket-roof");
+        if (pad) pad.alive = 1;
+        this.rocketHolder = "";
+        this.rocketBack = 0;
+        this.emit({ t: "notice", id: "", text: "Rocket launcher is back on the roof." });
+      }
+    }
+    this.holdAcc += dt;
+    if (this.holdAcc < 1) return;
+    this.holdAcc -= 1;
+    this.eachPlayer((p) => {
+      if (this.onHershRoof(p)) this.addScore(p, 2);
+    });
+    this.state.vehicles.forEach((bike) => {
+      if (bike.kind !== "heli" || !bike.alive || !bike.driver) return;
+      const pilot = this.state.players.get(bike.driver);
+      if (pilot && pilot.alive === 1) this.addScore(pilot, 2);
+    });
+  }
+
+  private noteTramp(p: PlayerState, rt: RT): void {
+    const on = this.map.decor.some((d) => {
+      if (d.kind !== "trampoline") return false;
+      const reach = Math.max(d.w, d.h) * 0.42;
+      return (d.x - p.x) ** 2 + (d.y - p.y) ** 2 < reach * reach;
+    });
+    if (on && p.floorZ < 30 && p.jumpZ > 40 && !rt.trampLatch) {
+      rt.trampLatch = 1;
+      rt.wildLeft = 1.15;
+      this.emit({ t: "notice", id: "", text: `${p.name} hit the trampoline` });
+      this.emit({ t: "ability", id: p.id, kind: "tramp" });
+    }
+    if (p.jumpZ < 20) rt.trampLatch = 0;
+  }
+
   private scoreTick(dt: number): void {
     if (this.warmup > 0) return;
     const mode = MODE_MAP[this.settings.mode];
@@ -2024,11 +2366,26 @@ export class WarSim {
       if (Math.hypot(viewer.x - tower.x, viewer.y - tower.y) < 520 * MAP_SCALE) range += 340 * MAP_SCALE;
     });
     if (dist > range) return false;
+    if (this.smokeBlocks(viewer, target, dist)) return false;
     if (dist < 420 * MAP_SCALE) return true;
     for (const b of this.map.buildings) {
       if (segmentHitsRect(viewer.x, viewer.y, target.x, target.y, b)) return false;
     }
     return true;
+  }
+
+  /** Opaque across a smoke cloud unless the two players are right next to each other. */
+  private smokeBlocks(viewer: PlayerState, target: PlayerState, dist: number): boolean {
+    if (this.smokeTtl.size === 0) return false;
+    if (dist <= SMOKE_NEAR) return false;
+    let blocked = false;
+    this.state.smokeClouds.forEach((cloud) => {
+      if (blocked) return;
+      if (segmentHitsCircle(viewer.x, viewer.y, target.x, target.y, cloud.x, cloud.y, cloud.r)) {
+        blocked = true;
+      }
+    });
+    return blocked;
   }
 
   private surf(x: number, y: number): number {
@@ -2225,6 +2582,8 @@ export class WarSim {
       p.reserve = rt.reserves[idx] ?? 0;
     }
     p.grenades = this.grenadesLeft(p, rt);
+    p.smokes = rt.smokes;
+    p.shield = rt.shieldLeft;
     p.reloading = rt.reloading ? 1 : 0;
     p.reloadPct = rt.reloading ? 1 - rt.reloadLeft / rt.reloadDur : 0;
     p.abilityCd = rt.abilityCd;

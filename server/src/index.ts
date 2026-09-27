@@ -2,7 +2,12 @@ import http from "http";
 import express from "express";
 import { Server, matchMaker } from "colyseus";
 import { runSanity } from "@sixfront/shared";
+import { passwordOk } from "./auth";
 import { WarRoom } from "./room";
+
+function readPass(req: express.Request): string {
+  return String(req.headers["x-game-password"] || (req.body as { password?: string } | undefined)?.password || req.query.password || "");
+}
 
 runSanity();
 
@@ -29,6 +34,10 @@ app.get("/health", (_req, res) => {
 });
 
 app.post("/api/rooms", async (req, res) => {
+  if (!passwordOk(readPass(req))) {
+    res.status(401).json({ error: "Wrong password." });
+    return;
+  }
   const ip = req.ip || req.socket.remoteAddress || "local";
   if (limited(ip)) {
     res.status(429).json({ error: "Too many rooms. Wait a minute." });
@@ -56,7 +65,11 @@ app.post("/api/rooms", async (req, res) => {
   res.json({ code, roomId: room.roomId });
 });
 
-app.get("/api/rooms", async (_req, res) => {
+app.get("/api/rooms", async (req, res) => {
+  if (!passwordOk(readPass(req))) {
+    res.status(401).json({ error: "Wrong password." });
+    return;
+  }
   const existing = await matchMaker.query({ name: "war" });
   const rooms = existing
     .map((room) => ({
@@ -73,6 +86,10 @@ app.get("/api/rooms", async (_req, res) => {
 });
 
 app.get("/api/rooms/:code", async (req, res) => {
+  if (!passwordOk(readPass(req))) {
+    res.status(401).json({ error: "Wrong password." });
+    return;
+  }
   const code = String(req.params.code || "").trim().toUpperCase();
   if (!/^(HERSH|BBDN)-\d{4}$/.test(code)) {
     res.status(400).json({ error: "Use a code like HERSH-4821." });

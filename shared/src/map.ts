@@ -1,7 +1,7 @@
 import type { Rect } from "./math";
-import { HERSH_SCALE, buildHershLayout } from "./hershLayout";
+import { HERSH, HERSH_SCALE, buildHershLayout } from "./hershLayout";
 
-export { HERSH_SCALE };
+export { HERSH, HERSH_SCALE, hershAtticDecks, hershPartitions } from "./hershLayout";
 
 export const SURF = {
   grass: 0,
@@ -127,7 +127,7 @@ export interface GameMap {
   floors: MapFloor[];
   doors: MapDoor[];
   /** Cartoon Hersh house anchor (world px). Front faces +X. */
-  hersh: { cx: number; cy: number };
+  hersh: { cx: number; cy: number; halfX: number; halfY: number };
   objectives: MapObjective[];
   towers: { id: string; x: number; y: number; r: number }[];
   spawns: Spawn[];
@@ -208,8 +208,6 @@ export function onRoofWalk(map: GameMap, x: number, y: number, floorZ: number): 
   return !!lad && floorZ >= lad.topZ - 36;
 }
 
-/** Below the lowest eave. A trampoline jump stays above this until it lands. */
-const AIR_CLEAR = 100;
 /** Wall thickness plus body radius. The lip sits just outside the roof rect. */
 const ROOF_LIP = 64;
 
@@ -225,8 +223,9 @@ function expandRect(r: { x: number; y: number; w: number; h: number }, pad: numb
 }
 
 /**
- * Solids used for walking. High jumps ignore walls so a trampoline can carry you
- * over the lip. Once your feet are on that roof, the lip walls stop blocking.
+ * Solids used for walking. Walls stay solid for the whole trampoline arc.
+ * Only the lip of a roof is ignored once your feet are above that roof, so you
+ * can land on it without flying through the house.
  */
 export function walkSolids<T extends { x: number; y: number; w: number; h: number }>(
   map: GameMap,
@@ -236,11 +235,13 @@ export function walkSolids<T extends { x: number; y: number; w: number; h: numbe
   jumpZ: number,
   solids: T[],
 ): T[] {
-  if (onRoofWalk(map, x, y, floorZ) || floorZ + jumpZ > AIR_CLEAR) return [];
+  const feet = floorZ + jumpZ;
   const roof = roofAt(map, x, y, ROOF_LIP);
-  if (!roof || floorZ < 80) return solids;
-  const hz = roofHeight(roof, x, y);
-  if (Math.abs(floorZ - hz) > 56) return solids;
+  const hz = roof ? roofHeight(roof, x, y) : 0;
+  const aboveRoof = !!roof && feet >= hz - 16;
+  const standing = !!roof && floorZ >= 80 && Math.abs(floorZ - hz) <= 56;
+  if (!onRoofWalk(map, x, y, floorZ) && !aboveRoof && !standing) return solids;
+  if (!roof) return [];
   const slabs = map.roofs.filter((r) => rectsOverlap(expandRect(r, 24), roof));
   return solids.filter((s) => !slabs.some((r) => rectsOverlap(s, expandRect(r, ROOF_LIP))));
 }
@@ -462,21 +463,18 @@ function buildMap(): GameMap {
   decor.push({ kind: "tree", x: hersh.cx + 1.5 * 48, y: hersh.cy - 8.2 * 48, w: px(4), h: px(4), rot: 0, variant: 0 });
   solids.push({ x: hersh.cx + 1.2 * 48, y: hersh.cy - 8.6 * 48, w: px(2), h: px(2) });
   decor.push({ kind: "lamp", x: hersh.cx + 5.3 * 48, y: hersh.cy + 1.6 * 48, w: px(1), h: px(1), rot: 0, variant: 0 });
-  // Foundation bushes, outside the front wall
-  for (const [bx, by] of [
-    [hersh.cx + 4.6 * 48, hersh.cy - 4.2 * 48],
-    [hersh.cx + 4.6 * 48, hersh.cy + 3.4 * 48],
-    [hersh.cx + 5.0 * 48, hersh.cy - 1.2 * 48],
-  ] as const) {
-    decor.push({ kind: "bush", x: bx, y: by, w: px(2.5), h: px(2.5), rot: 0, variant: 0 });
+  // Foundation bushes, outside the front wall and the porch
+  const bushZ = hersh.cx + (HERSH.d / 2 + 1.85) * 48 * HERSH_SCALE;
+  for (const by of [hersh.cy - 5.2 * 48, hersh.cy + 2.2 * 48, hersh.cy - 1.4 * 48] as const) {
+    decor.push({ kind: "bush", x: bushZ, y: by, w: px(2.5), h: px(2.5), rot: 0, variant: 0 });
   }
 
   // Climbable ladders → rooftops (street-facing walls + attic)
   const ladderD = px(3.5);
-  const eaveZ = Math.round(3.2 * 48 * HERSH_SCALE);
-  const ridgeZ = Math.round(6.1 * 48 * HERSH_SCALE);
-  const halfD = 4 * 48 * HERSH_SCALE;
-  const halfW = 5.75 * 48 * HERSH_SCALE;
+  const eaveZ = Math.round(HERSH.floorH * 48 * HERSH_SCALE);
+  const ridgeZ = Math.round(HERSH.ridge * 48 * HERSH_SCALE);
+  const halfD = (HERSH.d / 2) * 48 * HERSH_SCALE;
+  const halfW = (HERSH.w / 2) * 48 * HERSH_SCALE;
   const ladders: MapLadder[] = [
     // Guest house — ladder overlaps the roof so you can step off at the top
     { x: eh.x - px(1.1), y: eh.y + px(8), w: px(2.8), h: ladderD, topZ: ROOF_Z },
@@ -582,7 +580,7 @@ function buildMap(): GameMap {
     roofs,
     floors,
     doors,
-    hersh: { cx: hersh.cx, cy: hersh.cy },
+    hersh: { cx: hersh.cx, cy: hersh.cy, halfX: halfD, halfY: halfW },
     objectives,
     towers,
     spawns,

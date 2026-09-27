@@ -116,6 +116,17 @@ button { cursor: pointer; }
   -webkit-backdrop-filter: blur(10px);
 }
 .home-card .lede { color: rgba(239, 230, 210, 0.88); text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45); }
+.gate {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 18px 0 4px; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--muted);
+}
+.gate input {
+  width: 100%; max-width: 280px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: rgba(8, 10, 8, 0.72); color: var(--ink);
+  letter-spacing: 0.08em;
+}
 .home-card h1 { text-shadow: 0 2px 18px rgba(0, 0, 0, 0.55); }
 .home-card .actions button:not(.primary) {
   background: rgba(20, 28, 22, 0.55);
@@ -359,6 +370,8 @@ td, th { padding: 6px 10px; text-align: left; }
 }
 .derl-bar em { margin-left: 10px; font-style: normal; color: #e0c080; font-size: 12px; }
 .chip-dog { color: #f0d080; }
+.chip-smoke { color: #c8c8c8; }
+.chip-shield { color: #7dff9a; }
 .chip-menu {
   pointer-events: auto !important;
   cursor: pointer;
@@ -384,3 +397,85 @@ td, th { padding: 6px 10px; text-align: left; }
 @media (max-width: 720px) {
   .fps-chips { right: 10px; bottom: 12px; }
 }
+
+/* —— Release HUD —— */
+#hud { font-family: "Barlow", "Segoe UI", sans-serif; }
+#hud .chip {
+  background: linear-gradient(180deg, rgba(18, 22, 28, 0.62), rgba(10, 12, 16, 0.78));
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-family: Oswald, Impact, sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(240, 236, 226, 0.9);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(6px) saturate(1.2);
+}
+#hud .chip b { color: #fff; margin-left: 4px; }
+
+.fps-top { top: 14px; gap: 4px; width: auto; }
+.fps-top .scoreline {
+  font-family: Oswald, Impact, sans-serif;
+  font-size: 15px; letter-spacing: 0.14em;
+  padding: 6px 18px; border-radius: 3px;
+  background: linear-gradient(180deg, rgba(18, 22, 28, 0.7), rgba(10, 12, 16, 0.82));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+.fps-brand { font-size: 10px; letter-spacing: 0.42em; opacity: 0.75; }
+
+.vitals {
+  position: absolute; left: 22px; bottom: 22px; z-index: 6;
+  width: min(300px, 44vw); pointer-events: none;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.vitals-row {
+  display: flex; align-items: baseline; gap: 10px;
+  font-family: Oswald, Impact, sans-serif; color: #fff;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+.vitals-row b { font-size: 44px; line-height: 1; font-weight: 600; letter-spacing: 0.02em; }
+.vitals-cross { font-size: 26px; color: rgba(255, 255, 255, 0.7); }
+.vitals .hp-wrap {
+  height: 8px; border: none; border-radius: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  transform: skewX(-18deg);
+  backdrop-filter: none;
+}
+.vitals .bike-wrap { height: 5px; width: 80%; }
+.vitals .hp-fill { background: linear-gradient(90deg, #f4f1ea, #ffffff); box-shadow: 0 0 12px rgba(255, 255, 255, 0.45); }
+.vitals .hp-fill.hurt { background: linear-gradient(90deg, #ffb35a, #ff8a3a); box-shadow: 0 0 12px rgba(255, 150, 60, 0.5); }
+.vitals .hp-fill.crit { background: linear-gradient(90deg, #ff4a3a, #d01818); box-shadow: 0 0 14px rgba(255, 40, 30, 0.6); }
+.vitals .bike-fill { background: linear-gradient(90deg, #8fd0ff, #3c8ee0); }
+.vitals-tags { display: flex; gap: 6px; }
+.chip-shield { color: #8dffac !important; border-color: rgba(60, 200, 110, 0.45) !important; }
+
+.fps-chips {
+  right: 22px; bottom: 22px; max-width: none;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+}
+.arms { display: flex; flex-direction: column; align-items: flex-end; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6); }
+.arms-name {
+  font-family: Oswald, Impact, sans-serif; font-size: 13px; letter-spacing: 0.3em;
+  color: rgba(255, 255, 255, 0.72);
+}
+.arms .chip-ammo { font-family: Oswald, Impact, sans-serif; color: #fff; line-height: 1; }
+.arms .chip-ammo b { font-size: 54px; font-weight: 600; }
+.arms .chip-ammo b.empty { color: #ff5a4a; }
+.arms .chip-ammo span { font-size: 20px; margin-left: 8px; color: rgba(255, 255, 255, 0.55); }
+.arms-kit { display: flex; gap: 6px; align-items: center; }
+
+.feed {
+  font-family: Oswald, Impact, sans-serif; letter-spacing: 0.06em; font-size: 14px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+}
+.prompt {
+  background: linear-gradient(180deg, rgba(18, 22, 28, 0.72), rgba(10, 12, 16, 0.85)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 3px !important;
+  font-family: Oswald, Impact, sans-serif; letter-spacing: 0.22em !important;
+}
+.objectives { bottom: 150px !important; left: 22px !important; }

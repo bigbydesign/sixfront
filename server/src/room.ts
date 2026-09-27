@@ -7,6 +7,7 @@ import {
   type Identity,
   type Look,
 } from "@sixfront/shared";
+import { passwordOk } from "./auth";
 import { WarSim } from "./sim";
 import { WarState } from "./schema";
 
@@ -56,7 +57,8 @@ export class WarRoom extends Room<WarState> {
     this.onMessage("rejoin", (client) => this.sim.rejoin(client.sessionId));
   }
 
-  onJoin(client: Client, options: { name?: string; identity?: string; classId?: string; look?: Partial<Look> }): void {
+  onJoin(client: Client, options: { name?: string; identity?: string; classId?: string; look?: Partial<Look>; password?: string }): void {
+    if (!passwordOk(options?.password)) throw new Error("Wrong password.");
     const requested = isIdentity(String(options?.identity || "")) ? String(options.identity) as Identity : this.openIdentity();
     const look = clampLook(options?.look, DEFAULT_LOOK[requested]);
     const name = clean(options?.name, requested);

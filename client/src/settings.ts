@@ -13,6 +13,7 @@ export interface Binds {
   slot3: string;
   slot4: string;
   slot5: string;
+  slot7: string;
   crouch: string;
   score: string;
   map: string;
@@ -34,6 +35,7 @@ export const DEFAULT_BINDS: Binds = {
   slot3: "Digit3",
   slot4: "Digit4",
   slot5: "Digit5",
+  slot7: "Digit7",
   crouch: "ControlLeft",
   score: "Tab",
   map: "KeyM",

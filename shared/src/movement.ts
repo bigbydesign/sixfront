@@ -69,7 +69,7 @@ export function sanitizeInput(raw: Partial<MoveInput> | undefined, fallbackSeq =
     boost: !!raw?.boost,
     brake: !!raw?.brake,
     ads: !!raw?.ads,
-    slot: Math.round(n(raw?.slot, 1, 5, 1)),
+    slot: Math.round(n(raw?.slot, 1, 7, 1)),
   };
 }
 
@@ -192,6 +192,79 @@ export function stepHeli(body: HeliBody, input: MoveInput, env: MoverEnv): void 
   if (next.x === body.x && next.y === body.y && (dx !== 0 || dy !== 0)) body.speed *= 0.45;
   body.x = next.x;
   body.y = next.y;
+}
+
+export interface JetBody {
+  x: number;
+  y: number;
+  z: number;
+  vz: number;
+  heading: number;
+  yawRate: number;
+  pitch: number;
+  pitchRate: number;
+  speed: number;
+  crashed: boolean;
+}
+
+/**
+ * Fast and loose. Yaw and pitch keep moving after the keys come up.
+ * A level slow touchdown can live. A wall, a stall, or a nose-down landing does not.
+ */
+export function stepJet(body: JetBody, input: MoveInput, env: MoverEnv, handsOff = false): void {
+  const stats = VEHICLES.jet;
+  const throttle = handsOff ? 0 : input.throttle > 0 ? 1 : input.throttle < 0 ? -0.45 : 0;
+  body.speed += throttle * stats.accel * env.dt;
+  const onGround = body.z < 8;
+  const wasAir = !onGround;
+  body.speed *= Math.max(0, 1 - (onGround ? 1.35 : stats.drag) * env.dt);
+  body.speed = clamp(body.speed, 0, stats.maxSpeed);
+
+  body.yawRate += input.steer * (handsOff ? 0 : 8.5) * env.dt;
+  body.yawRate *= Math.max(0, 1 - 0.65 * env.dt);
+  body.yawRate = clamp(body.yawRate, -2.6, 2.6);
+  body.heading += body.yawRate * env.dt;
+
+  const climb = handsOff ? 0 : (input.brake ? 1 : 0) + (input.crouch ? -1 : 0);
+  body.pitchRate += climb * 3.6 * env.dt;
+  body.pitchRate *= Math.max(0, 1 - 0.5 * env.dt);
+  if (handsOff && !onGround) body.pitchRate -= 1.8 * env.dt;
+  if (!onGround && body.speed < 250) body.pitchRate -= 2.6 * env.dt;
+  body.pitchRate = clamp(body.pitchRate, -2, 2);
+  body.pitch = clamp(body.pitch + body.pitchRate * env.dt, -1.15, 0.95);
+
+  if (onGround && body.pitch > 0.22 && body.speed > 300) {
+    body.z = 14;
+    body.vz = 70;
+  } else if (!onGround) {
+    body.vz = Math.sin(body.pitch) * body.speed * 0.85;
+    body.z += body.vz * env.dt;
+    const maxZ = 20 * 48;
+    if (body.z > maxZ) {
+      body.z = maxZ;
+      body.pitchRate -= 0.8 * env.dt;
+    }
+  }
+
+  const dx = Math.cos(body.heading) * body.speed * env.dt;
+  const dy = Math.sin(body.heading) * body.speed * env.dt;
+  const high = body.z > 320;
+  const next = moveCircle(body.x, body.y, 22, dx, dy, high ? [] : env.solids, env.blocked);
+  const hitWall = !high && next.x === body.x && next.y === body.y && Math.hypot(dx, dy) > 0.4;
+  body.x = next.x;
+  body.y = next.y;
+
+  if (wasAir && body.z <= 6) {
+    const hard = Math.abs(body.pitch) > 0.16 || body.vz < -90 || body.speed > 520;
+    if (body.speed > 80 && hard) body.crashed = true;
+    if (!body.crashed) {
+      body.z = 0;
+      body.vz = 0;
+      body.pitch *= 0.3;
+      body.pitchRate = 0;
+    }
+  }
+  if (hitWall && body.speed > 70) body.crashed = true;
 }
 
 export function seatPoint(x: number, y: number, heading: number, seat: number): { x: number; y: number } {

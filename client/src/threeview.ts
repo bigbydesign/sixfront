@@ -3,6 +3,11 @@
  * Keeps Colyseus Session + prediction.
  */
 import * as THREE from "three";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import {
   CLASSES,
   IDENTITIES,
@@ -24,6 +29,8 @@ import {
   SIM_DT,
   slotWeapon,
   stepInfantry,
+  SHIRTS,
+  PANTS,
   type ClassId,
   type MoveInput,
 } from "@sixfront/shared";
@@ -115,16 +122,18 @@ const TEX_SHINGLE = makeTex(64, (ctx, n) => {
   }
 });
 
-const TEX_ASPHALT = makeTex(128, (ctx, n) => {
-  for (let y = 0; y < 128; y++) {
-    for (let x = 0; x < 128; x++) {
+const TEX_ASPHALT = makeTex(256, (ctx, n) => {
+  for (let y = 0; y < 256; y++) {
+    for (let x = 0; x < 256; x++) {
       const grit = n(x, y);
-      const patch = n(Math.floor(x / 8), Math.floor(y / 8));
-      let g = 96 + patch * 46 + grit * 24;
-      if (grit > 0.82) g = 140 + n(x * 2, y * 3) * 28;
-      if (grit < 0.05) g = 62;
-      if ((x * 3 + y) % 53 < 2) g *= 0.78;
-      ctx.fillStyle = rgb(g * 0.38, g * 0.95, g * 0.22);
+      const patch = n(Math.floor(x / 12), Math.floor(y / 12));
+      let v = 38 + patch * 22 + grit * 16;
+      if (grit > 0.84) v = 78 + n(x * 2, y * 3) * 36;
+      if (grit < 0.04) v = 22;
+      const crack = (x + Math.floor(n(y, 2) * 6)) % 48 < 1 || (y + Math.floor(n(x, 4) * 5)) % 61 < 1;
+      if (crack) v = 16;
+      if (x % 128 < 2 || y % 128 < 2) v = 18;
+      ctx.fillStyle = rgb(v, v, v * 0.98);
       ctx.fillRect(x, y, 1, 1);
     }
   }
@@ -184,22 +193,138 @@ function solidMat(color: number): THREE.MeshLambertMaterial {
   return new THREE.MeshLambertMaterial({ color });
 }
 
-const groundMaterials = new Map<string, THREE.MeshBasicMaterial>();
+/** Star-shaped muzzle flash with a hot core. Drawn additive so bloom picks it up. */
+function makeFlashTex(): THREE.CanvasTexture {
+  const size = 128;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const ctx = c.getContext("2d")!;
+  const mid = size / 2;
+  ctx.translate(mid, mid);
+  for (let i = 0; i < 7; i++) {
+    ctx.rotate((Math.PI * 2) / 7);
+    const len = mid * (0.62 + ((i * 37) % 10) / 26);
+    const g = ctx.createLinearGradient(0, 0, len, 0);
+    g.addColorStop(0, "rgba(255,244,210,1)");
+    g.addColorStop(0.45, "rgba(255,170,70,0.75)");
+    g.addColorStop(1, "rgba(255,90,20,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(0, -mid * 0.09);
+    ctx.lineTo(len, 0);
+    ctx.lineTo(0, mid * 0.09);
+    ctx.closePath();
+    ctx.fill();
+  }
+  const core = ctx.createRadialGradient(0, 0, 0, 0, 0, mid * 0.42);
+  core.addColorStop(0, "rgba(255,255,240,1)");
+  core.addColorStop(0.4, "rgba(255,210,120,0.85)");
+  core.addColorStop(1, "rgba(255,120,30,0)");
+  ctx.fillStyle = core;
+  ctx.beginPath();
+  ctx.arc(0, 0, mid * 0.42, 0, Math.PI * 2);
+  ctx.fill();
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
-function groundMaterial(tex: THREE.Texture): THREE.MeshBasicMaterial {
+function makePuffTex(): THREE.CanvasTexture {
+  const size = 64;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const ctx = c.getContext("2d")!;
+  const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 31);
+  g.addColorStop(0, "rgba(200,190,175,0.85)");
+  g.addColorStop(0.6, "rgba(160,150,140,0.35)");
+  g.addColorStop(1, "rgba(140,130,120,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const PUFF_TEX = makePuffTex();
+const SPARK_MAT = new THREE.MeshBasicMaterial({
+  color: new THREE.Color(0xffc060).multiplyScalar(5),
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  depthWrite: false,
+});
+const SPARK_GEO = new THREE.BoxGeometry(0.018, 0.018, 0.11);
+const BRASS_MAT = new THREE.MeshLambertMaterial({ color: 0xc89a3a, emissive: 0x2a1a04 });
+const SHELL_MAT = new THREE.MeshLambertMaterial({ color: 0xb02820 });
+const CASING_GEO = new THREE.CylinderGeometry(0.009, 0.009, 0.042, 6);
+const SHELL_GEO = new THREE.CylinderGeometry(0.016, 0.016, 0.06, 8);
+
+/** How each weapon feels: camera punch (rad), viewmodel kick, flash size, sound, casing. */
+const GUN_FX: Record<string, { punch: number; kick: number; flash: number; sound: string; casing: "brass" | "shell" | "" }> = {
+  pistol: { punch: 0.02, kick: 1, flash: 0.8, sound: "pistol", casing: "brass" },
+  rifle: { punch: 0.012, kick: 0.75, flash: 1, sound: "rifle", casing: "brass" },
+  carbine: { punch: 0.012, kick: 0.72, flash: 0.95, sound: "rifle", casing: "brass" },
+  scout: { punch: 0.02, kick: 1, flash: 1.05, sound: "rifle", casing: "brass" },
+  smg: { punch: 0.008, kick: 0.55, flash: 0.75, sound: "smg", casing: "brass" },
+  lmg: { punch: 0.011, kick: 0.65, flash: 1.15, sound: "lmg", casing: "brass" },
+  shotgun: { punch: 0.055, kick: 1.5, flash: 1.6, sound: "shotgun", casing: "shell" },
+  sniper: { punch: 0.07, kick: 1.7, flash: 1.4, sound: "sniper", casing: "brass" },
+  rocket: { punch: 0.08, kick: 1.9, flash: 2.2, sound: "rocket", casing: "" },
+  cheese: { punch: 0.006, kick: 0.45, flash: 0.5, sound: "smg", casing: "" },
+};
+
+/** Filmic grade applied before tone mapping: contrast, warmth, and a soft vignette. */
+const GradeShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    vignette: { value: 0.32 },
+    hurt: { value: 0 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float vignette;
+    uniform float hurt;
+    varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      vec3 col = c.rgb;
+      float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(l), col, 1.12);
+      col = (col - 0.18) * 1.06 + 0.18;
+      col *= vec3(1.03, 1.0, 0.96);
+      vec2 d = vUv - 0.5;
+      float v = smoothstep(0.85, 0.2, length(d) * 1.25);
+      col *= mix(1.0 - vignette, 1.0, v);
+      col = mix(col, col * vec3(1.35, 0.35, 0.3), hurt * (1.0 - v) * 0.85);
+      gl_FragColor = vec4(max(col, 0.0), c.a);
+    }`,
+};
+
+const groundMaterials = new Map<string, THREE.MeshLambertMaterial>();
+
+function groundMaterial(tex: THREE.Texture): THREE.MeshLambertMaterial {
   const cached = groundMaterials.get(tex.uuid);
   if (cached) return cached;
   const map = tex.clone();
   map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  map.colorSpace = THREE.SRGBColorSpace;
   map.magFilter = THREE.LinearFilter;
   map.minFilter = THREE.LinearMipmapLinearFilter;
+  map.anisotropy = 8;
   map.needsUpdate = true;
-  const material = new THREE.MeshBasicMaterial({
+  const material = new THREE.MeshLambertMaterial({
     map,
+    color: 0xffffff,
     fog: false,
+    depthWrite: true,
     polygonOffset: true,
-    polygonOffsetFactor: 2,
-    polygonOffsetUnits: 2,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
   groundMaterials.set(tex.uuid, material);
   return material;
@@ -212,6 +337,14 @@ export class ThreeView {
   private overlay: HTMLCanvasElement;
   private octx: CanvasRenderingContext2D;
   private renderer: THREE.WebGLRenderer;
+  private composer!: EffectComposer;
+  private bloom!: UnrealBloomPass;
+  private grade!: ShaderPass;
+  private sun!: THREE.DirectionalLight;
+  private sky!: THREE.Mesh;
+  private shadowScan = 0;
+  private hurtGlow = 0;
+  private lastHp = -1;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private gunRoot: THREE.Group;
@@ -221,6 +354,7 @@ export class ThreeView {
   private bikes = new Map<string, THREE.Object3D>();
   private projectiles = new Map<string, THREE.Object3D>();
   private pickups = new Map<string, THREE.Object3D>();
+  private smokeCloudMeshes = new Map<string, THREE.Object3D>();
   private ghosts = new Map<string, Ghost>();
   private tracers: { mesh: THREE.Object3D; until: number }[] = [];
   private splats: { mesh: THREE.Object3D; until: number }[] = [];
@@ -245,6 +379,18 @@ export class ThreeView {
   private seq = 1;
   private edges = { reload: false, ability: false, grenade: false, interact: false };
   private gunKick = 0;
+  private muzzleLight!: THREE.PointLight;
+  private punchPitch = 0;
+  private punchYaw = 0;
+  private gunRoll = 0;
+  private lastFx = 0;
+  private spread = 0;
+  private crossEl!: HTMLDivElement;
+  private hitMark = { until: 0, head: false, kill: false };
+  private bullets: {
+    streak: THREE.Mesh; from: THREE.Vector3; to: THREE.Vector3; born: number; dur: number; landed: boolean;
+  }[] = [];
+  private puffs: { sprite: THREE.Sprite; born: number; life: number; grow: number }[] = [];
   private gunSkin = "";
   private bob = 0;
   private jumpY = 0;
@@ -291,6 +437,68 @@ export class ThreeView {
   };
   private onResize = () => this.resize();
 
+  /** Gradient sky from deep blue overhead to a warm haze at the horizon. Follows the camera. */
+  private addSkyDome(): void {
+    const geo = new THREE.SphereGeometry(200, 32, 16);
+    const mat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      uniforms: {
+        top: { value: new THREE.Color(0x3d6fb0) },
+        mid: { value: new THREE.Color(0x9cc0e0) },
+        horizon: { value: new THREE.Color(0xe6dccb) },
+      },
+      vertexShader: `
+        varying vec3 vDir;
+        void main() {
+          vDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec3 top;
+        uniform vec3 mid;
+        uniform vec3 horizon;
+        varying vec3 vDir;
+        void main() {
+          float h = vDir.y;
+          vec3 col = h > 0.0
+            ? mix(mix(horizon, mid, smoothstep(0.0, 0.18, h)), top, smoothstep(0.18, 0.9, h))
+            : mix(horizon, vec3(0.42, 0.44, 0.46), smoothstep(0.0, -0.25, h));
+          gl_FragColor = vec4(col, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+    });
+    this.sky = new THREE.Mesh(geo, mat);
+    this.sky.frustumCulled = false;
+    this.sky.renderOrder = -10;
+    this.scene.add(this.sky);
+  }
+
+  /** Every world mesh casts and takes shadows, except glass, smoke, and see-through props. */
+  private applyShadows(): void {
+    this.worldRoot.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.isMesh || mesh.userData.shadowed) return;
+      mesh.userData.shadowed = true;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      const clear = mats.some((m) => m && (m.transparent || (m as THREE.MeshBasicMaterial).isMeshBasicMaterial));
+      mesh.receiveShadow = !clear || mesh.name === "Asphalt";
+      mesh.castShadow = !clear && mesh.name !== "Asphalt";
+    });
+  }
+
+  private followSun(): void {
+    const c = this.camera.position;
+    const snap = 2;
+    const x = Math.round(c.x / snap) * snap;
+    const z = Math.round(c.z / snap) * snap;
+    this.sun.target.position.set(x, 0, z);
+    this.sun.position.set(x + 38, 72, z + 22);
+    this.sky.position.copy(c);
+  }
+
   /** Full portrait in the sky, uncropped, facing the camera. */
   private addJesusSun(): void {
     const tex = new THREE.TextureLoader().load(`${import.meta.env.BASE_URL}sun-jesus.jpg`);
@@ -299,6 +507,7 @@ export class ThreeView {
       map: tex,
       depthWrite: false,
       fog: false,
+      toneMapped: false,
     });
     const face = new THREE.Sprite(mat);
     const height = 46;
@@ -323,6 +532,7 @@ export class ThreeView {
       transparent: true,
       depthWrite: false,
       fog: false,
+      toneMapped: false,
     });
     const moon = new THREE.Sprite(mat);
     moon.position.set(10, 62, 50);
@@ -420,26 +630,53 @@ export class ThreeView {
     this.root.appendChild(this.canvasHost);
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x87a0b8);
-    this.scene.fog = new THREE.Fog(0x9aafc4, 120, 260);
+    this.scene.background = new THREE.Color(0x9cb6d0);
+    this.scene.fog = new THREE.Fog(0xb4c6d6, 90, 215);
 
     this.camera = new THREE.PerspectiveCamera(75, 1, 0.08, 220);
     this.camera.rotation.order = "YXZ";
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", stencil: false });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.canvasHost.appendChild(this.renderer.domElement);
 
     this.worldRoot = new THREE.Group();
     this.scene.add(this.worldRoot);
 
-    const hemi = new THREE.HemisphereLight(0xc8d8f0, 0x1a1c1e, 0.85);
+    this.addSkyDome();
+    const hemi = new THREE.HemisphereLight(0xcfe0f4, 0x3a3228, 0.95);
     this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xfff2d8, 1.05);
+    const sun = new THREE.DirectionalLight(0xffe6c4, 2.1);
     sun.position.set(40, 80, 20);
-    this.scene.add(sun);
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.22));
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    const sc = sun.shadow.camera;
+    sc.left = -42;
+    sc.right = 42;
+    sc.top = 42;
+    sc.bottom = -42;
+    sc.near = 1;
+    sc.far = 160;
+    sun.shadow.bias = -0.0004;
+    sun.shadow.normalBias = 0.035;
+    sun.shadow.radius = 3;
+    this.scene.add(sun, sun.target);
+    this.sun = sun;
+    this.scene.add(new THREE.AmbientLight(0xfff4e6, 0.12));
+
+    const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+    this.composer = new EffectComposer(this.renderer, target);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.32, 0.55, 0.9);
+    this.composer.addPass(this.bloom);
+    this.grade = new ShaderPass(GradeShader);
+    this.composer.addPass(this.grade);
+    this.composer.addPass(new OutputPass());
     this.addJesusSun();
     this.addMoon();
     this.addClouds();
@@ -450,15 +687,28 @@ export class ThreeView {
     this.camera.add(this.gunRoot);
     this.scene.add(this.camera);
 
-    this.muzzleFlash = new THREE.Mesh(
-      new THREE.SphereGeometry(0.06, 8, 8),
-      new THREE.MeshBasicMaterial({ color: 0xffcc66, transparent: true, opacity: 0 }),
-    );
+    const flashMat = new THREE.MeshBasicMaterial({
+      map: makeFlashTex(),
+      color: new THREE.Color(0xffffff).multiplyScalar(3),
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.muzzleFlash = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3), flashMat);
+    const side = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.14), flashMat);
+    side.rotation.y = Math.PI / 2;
+    side.position.z = -0.12;
+    this.muzzleFlash.add(side);
+    this.muzzleLight = new THREE.PointLight(0xffa850, 0, 7, 2);
+    this.muzzleFlash.add(this.muzzleLight);
     this.muzzleFlash.position.set(0.12, -0.12, -0.85);
     this.buildGun("rifle");
 
     const cross = document.createElement("div");
     cross.className = "three-cross";
+    this.crossEl = cross;
     this.root.appendChild(cross);
 
     this.overlay = document.createElement("canvas");
@@ -493,34 +743,143 @@ export class ThreeView {
     this.canvasHost.removeEventListener("click", this.onClick);
     this.canvasHost.removeEventListener("wheel", this.onWheel);
     if (document.pointerLockElement === this.canvasHost) document.exitPointerLock();
+    this.composer.dispose();
     this.renderer.dispose();
     this.root.remove();
   }
 
-  tracer(x: number, y: number, x2: number, y2: number, z1 = 74, z2 = 74): void {
-    const group = new THREE.Group();
-    const dx = (x2 - x) * S;
-    const dz = (y2 - y) * S;
+  /** A short hot streak that flies from the shooter to the hit point, then sparks and dust where it lands. */
+  tracer(x: number, y: number, x2: number, y2: number, z1 = 74, z2 = 74, mine = false): void {
     const y0 = Math.max(0.15, z1 * S);
-    const y1 = Math.max(0.08, z2 * S);
-    const len = Math.hypot(dx, dz, y1 - y0);
-    if (len > 0.08) {
-      const streak = new THREE.Mesh(
-        new THREE.BoxGeometry(0.035, 0.035, len),
-        new THREE.MeshBasicMaterial({ color: 0xffe6a0, transparent: true, opacity: 0.92 }),
-      );
-      streak.position.set((x + x2) * 0.5 * S, (y0 + y1) * 0.5, (y + y2) * 0.5 * S);
-      streak.lookAt(x2 * S, y1, y2 * S);
-      group.add(streak);
+    const y1 = Math.max(0.03, z2 * S);
+    const from = new THREE.Vector3(x * S, y0, y * S);
+    const to = new THREE.Vector3(x2 * S, y1, y2 * S);
+    if (mine) {
+      this.gunRoot.updateMatrixWorld();
+      from.copy(this.muzzleFlash.getWorldPosition(new THREE.Vector3()));
     }
-    const spark = new THREE.Mesh(
-      new THREE.SphereGeometry(0.07, 6, 6),
-      new THREE.MeshBasicMaterial({ color: 0xffb040 }),
+    const len = from.distanceTo(to);
+    if (len < 0.08) {
+      this.impactAt(to);
+      return;
+    }
+    const streakLen = Math.min(len * 0.6, 2.4);
+    const streak = new THREE.Mesh(
+      new THREE.BoxGeometry(0.014, 0.014, streakLen),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(0xffd89a).multiplyScalar(4),
+        transparent: true,
+        opacity: 0.95,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
     );
-    spark.position.set(x2 * S, y1, y2 * S);
-    group.add(spark);
-    this.worldRoot.add(group);
-    this.tracers.push({ mesh: group, until: performance.now() + 140 });
+    streak.userData.shadowed = true;
+    streak.position.copy(from);
+    streak.lookAt(to);
+    this.worldRoot.add(streak);
+    const dur = Math.max(35, (len / 340) * 1000);
+    this.bullets.push({ streak, from, to, born: performance.now(), dur, landed: false });
+    if (this.bullets.length > 90) {
+      const old = this.bullets.shift()!;
+      this.dropStreak(old.streak);
+    }
+  }
+
+  private dropStreak(streak: THREE.Mesh): void {
+    this.worldRoot.remove(streak);
+    streak.geometry.dispose();
+    (streak.material as THREE.Material).dispose();
+  }
+
+  /** Sparks that bounce off the surface plus a puff of dust that spreads and fades. */
+  private impactAt(at: THREE.Vector3): void {
+    const now = performance.now();
+    const count = 4 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < count; i++) {
+      const spark = new THREE.Mesh(SPARK_GEO, SPARK_MAT);
+      spark.userData.shadowed = true;
+      spark.position.copy(at);
+      const a = Math.random() * Math.PI * 2;
+      const up = 1.5 + Math.random() * 3.5;
+      const out = 1 + Math.random() * 3;
+      spark.lookAt(at.x + Math.cos(a), at.y + up * 0.3, at.z + Math.sin(a));
+      this.worldRoot.add(spark);
+      this.debris.push({
+        mesh: spark, vx: Math.cos(a) * out, vy: up, vz: Math.sin(a) * out,
+        wx: 0, wy: 0, wz: 0, until: now + 180 + Math.random() * 220,
+      });
+    }
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: PUFF_TEX, transparent: true, depthWrite: false, opacity: 0.8,
+    }));
+    sprite.position.copy(at);
+    sprite.position.y += 0.08;
+    sprite.scale.setScalar(0.25);
+    this.worldRoot.add(sprite);
+    this.puffs.push({ sprite, born: now, life: 650 + Math.random() * 300, grow: 0.9 + Math.random() * 0.6 });
+    if (this.puffs.length > 60) {
+      const old = this.puffs.shift()!;
+      this.worldRoot.remove(old.sprite);
+      old.sprite.material.dispose();
+    }
+  }
+
+  private stepBullets(): void {
+    const now = performance.now();
+    this.bullets = this.bullets.filter((b) => {
+      const t = (now - b.born) / b.dur;
+      if (t >= 1) {
+        if (!b.landed) {
+          b.landed = true;
+          this.impactAt(b.to);
+        }
+        this.dropStreak(b.streak);
+        return false;
+      }
+      b.streak.position.lerpVectors(b.from, b.to, t);
+      return true;
+    });
+    this.puffs = this.puffs.filter((p) => {
+      const t = (now - p.born) / p.life;
+      if (t >= 1) {
+        this.worldRoot.remove(p.sprite);
+        p.sprite.material.dispose();
+        return false;
+      }
+      p.sprite.scale.setScalar(0.25 + t * p.grow);
+      p.sprite.position.y += 0.004;
+      p.sprite.material.opacity = 0.8 * (1 - t) * (1 - t);
+      return true;
+    });
+  }
+
+  /** Brass flips out the right side of the gun and bounces on the ground. */
+  private ejectCasing(kind: "brass" | "shell"): void {
+    this.gunRoot.updateMatrixWorld();
+    const at = this.gunRoot.localToWorld(new THREE.Vector3(0.05, 0.04, -0.28));
+    const q = this.camera.quaternion;
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+    const back = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
+    const v = right.multiplyScalar(1.6 + Math.random() * 1.2)
+      .add(up.multiplyScalar(1.4 + Math.random() * 0.9))
+      .add(back.multiplyScalar(0.3 + Math.random() * 0.4));
+    const mesh = new THREE.Mesh(kind === "shell" ? SHELL_GEO : CASING_GEO, kind === "shell" ? SHELL_MAT : BRASS_MAT);
+    mesh.userData.shadowed = true;
+    mesh.position.copy(at);
+    mesh.rotation.set(Math.random() * 3, Math.random() * 3, Math.PI / 2);
+    this.worldRoot.add(mesh);
+    this.debris.push({
+      mesh, vx: v.x, vy: v.y, vz: v.z,
+      wx: 14 + Math.random() * 10, wy: Math.random() * 6, wz: 18 + Math.random() * 10,
+      until: performance.now() + 1400,
+    });
+  }
+
+  /** Crosshair marker. Red for a headshot, larger for a kill. */
+  hitMarker(head: boolean, kill: boolean): void {
+    this.hitMark = { until: performance.now() + (kill ? 420 : 220), head: head || kill, kill };
   }
 
   radarPing(x: number, y: number): void {
@@ -530,6 +889,10 @@ export class ThreeView {
 
   burst(x: number, y: number, kind = ""): void {
     this.radarPing(x, y);
+    if (kind === "smoke") {
+      audio.play("empty");
+      return;
+    }
     if (kind === "hotdog" || kind === "grenade") {
       this.splatHotdog(x, y);
       audio.play("explode");
@@ -719,18 +1082,40 @@ export class ThreeView {
   }
 
   onShotFeedback(weapon?: string): void {
-    this.gunKick = 1;
     const mat = this.muzzleFlash.material as THREE.MeshBasicMaterial;
     const me = this.session.mine;
-    if (weapon === "grenade" || me?.weaponSlot === 4) {
+    if (weapon === "grenade" || weapon === "smoke" || me?.weaponSlot === 4) {
       mat.opacity = 0;
       this.gunKick = 1.35;
       audio.play("empty");
       return;
     }
+    const now = performance.now();
+    // Shotgun pellets arrive as several events in one tick; treat them as one shot.
+    if (now - this.lastFx < 30) return;
+    this.lastFx = now;
+    const fx = GUN_FX[weapon ?? ""] ?? GUN_FX.rifle;
+    const ads = mouse.right && (me?.seat ?? -1) < 0;
+    const steady = ads ? 0.55 : 1;
+    this.punchPitch += fx.punch * steady * (0.85 + Math.random() * 0.3);
+    this.punchYaw += (Math.random() - 0.5) * fx.punch * 0.7 * steady;
+    this.gunRoll += (Math.random() - 0.5) * 0.08 * fx.kick;
+    this.gunKick = Math.min(2.2, this.gunKick * 0.35 + fx.kick);
+    this.spread = Math.min(1, this.spread + fx.punch * 9);
     mat.opacity = 1;
-    if (!me) return;
-    audio.play(me.classId === "heavy" ? "lmg" : me.classId === "medic" ? "smg" : "shot");
+    this.muzzleFlash.rotation.z = Math.random() * Math.PI * 2;
+    this.muzzleFlash.scale.setScalar(fx.flash * (0.8 + Math.random() * 0.45));
+    this.muzzleLight.intensity = 5 * fx.flash;
+    if (fx.casing) this.ejectCasing(fx.casing);
+    audio.gun(fx.sound, 0, 0);
+  }
+
+  /** Meters from the local player to a world point. */
+  distanceTo(x: number, y: number): number {
+    const me = this.session.mine;
+    if (!me) return 0;
+    const o = this.origin(me);
+    return Math.hypot(x - o.x, y - o.y) * S;
   }
 
   get midX(): number {
@@ -914,56 +1299,35 @@ export class ThreeView {
     }
   }
 
-  /** Green outdoor ground. The house interior is left open. */
+  /** Black asphalt across the whole arena, in tiles so the texture stays sharp. */
   private buildSurfaces(): void {
-    const cell = map.cell * S;
-    const skirt = 18;
-    const hx0 = map.hersh.cx - 4.2 * 48 * HERSH_SCALE;
-    const hx1 = map.hersh.cx + 4.2 * 48 * HERSH_SCALE;
-    const hy0 = map.hersh.cy - 5.95 * 48 * HERSH_SCALE;
-    const hy1 = map.hersh.cy + 5.95 * 48 * HERSH_SCALE;
-    const inHouse = (x: number, y: number) => x > hx0 && x < hx1 && y > hy0 && y < hy1;
-
-    const layers: { id: number; tex: THREE.Texture; y: number }[] = [
-      { id: 0, tex: TEX_ASPHALT, y: 0 },
-    ];
-    for (const layer of layers) {
-      const positions: number[] = [];
-      const uvs: number[] = [];
-      const push = (x0: number, z0: number, x1: number, z1: number, y: number) => {
+    const skirt = 48;
+    const tile = 16;
+    const y = 0;
+    const x1 = WORLD_W * S + skirt;
+    const z1 = WORLD_H * S + skirt;
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const uv = 4;
+    for (let z = -skirt; z < z1; z += tile) {
+      for (let x = -skirt; x < x1; x += tile) {
+        const x2 = Math.min(x + tile, x1);
+        const z2 = Math.min(z + tile, z1);
         positions.push(
-          x0, y, z0, x1, y, z0, x1, y, z1,
-          x0, y, z0, x1, y, z1, x0, y, z1,
+          x, y, z, x2, y, z2, x2, y, z,
+          x, y, z, x, y, z2, x2, y, z2,
         );
-        const u = (x: number) => x / 2.5;
-        const v = (z: number) => z / 2.5;
-        uvs.push(u(x0), v(z0), u(x1), v(z0), u(x1), v(z1), u(x0), v(z0), u(x1), v(z1), u(x0), v(z1));
-      };
-      if (layer.id === 0) {
-        const x1 = WORLD_W * S;
-        const z1 = WORLD_H * S;
-        push(-skirt, -skirt, x1 + skirt, 0, 0);
-        push(-skirt, z1, x1 + skirt, z1 + skirt, 0);
-        push(-skirt, 0, 0, z1, 0);
-        push(x1, 0, x1 + skirt, z1, 0);
+        uvs.push(0, 0, uv, uv, uv, 0, 0, 0, 0, uv, uv, uv);
       }
-      for (let row = 0; row < map.rows; row++) {
-        for (let col = 0; col < map.cols; col++) {
-          const wx = (col + 0.5) * map.cell;
-          const wy = (row + 0.5) * map.cell;
-          if (inHouse(wx, wy)) continue;
-          const x0 = col * cell;
-          const z0 = row * cell;
-          push(x0, z0, x0 + cell, z0 + cell, layer.y);
-        }
-      }
-      if (!positions.length) continue;
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-      geo.computeVertexNormals();
-      this.worldRoot.add(new THREE.Mesh(geo, groundMaterial(layer.tex)));
     }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, groundMaterial(TEX_ASPHALT));
+    mesh.frustumCulled = false;
+    mesh.name = "Asphalt";
+    this.worldRoot.add(mesh);
   }
 
   private addBox(
@@ -1418,6 +1782,9 @@ export class ThreeView {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, false);
+    this.composer.setPixelRatio(this.renderer.getPixelRatio());
+    this.composer.setSize(w, h);
+    this.bloom.resolution.set(w, h);
     this.overlay.width = w;
     this.overlay.height = h;
     this.renderer.domElement.style.width = "100%";
@@ -1464,10 +1831,19 @@ export class ThreeView {
     }
     this.predict(me, dt, input);
     this.stepJump(me, dt, typing || serverMenuOpen());
-    if (me.alive === 1 && mouse.left && me.weaponSlot !== 4) this.gunKick = Math.max(this.gunKick, 0.45);
-    this.gunKick = Math.max(0, this.gunKick - dt * 7);
+    const settle = Math.exp(-dt * 11);
+    this.gunKick *= Math.exp(-dt * 13);
+    this.punchPitch *= settle;
+    this.punchYaw *= settle;
+    this.gunRoll *= Math.exp(-dt * 9);
+    this.spread *= Math.exp(-dt * 6);
     const flashMat = this.muzzleFlash.material as THREE.MeshBasicMaterial;
-    flashMat.opacity = Math.max(0, flashMat.opacity - dt * 12);
+    flashMat.opacity = Math.max(0, flashMat.opacity - dt * 30);
+    this.muzzleLight.intensity = Math.max(0, this.muzzleLight.intensity - dt * 160);
+    const moveSpread = Math.hypot(input.mx, input.my) > 0.1 ? (input.sprint ? 0.5 : 0.25) : 0;
+    const gap = 1 + (this.spread + moveSpread) * 1.6;
+    this.crossEl.style.transform = `scale(${gap.toFixed(3)})`;
+    this.crossEl.style.opacity = mouse.right && me.seat < 0 ? "0.35" : "0.95";
     const moving = Math.hypot(input.mx, input.my) > 0.1 || Math.abs(input.throttle) > 0.1;
     const sprinting = !!input.sprint && me.seat < 0 && moving;
     this.bob += dt * (sprinting ? 14 : moving ? 9 : 1.4);
@@ -1481,10 +1857,22 @@ export class ThreeView {
     if (me.alive !== 1 && !this.watch) this.gunRoot.visible = false;
     if (this.forceSpectate && me.alive === 1 && !this.watch) this.gunRoot.visible = false;
     this.stepDebris(dt);
+    this.stepBullets();
     this.pruneTracers();
     this.pruneSplats();
     this.drawOverlay(me);
-    this.renderer.render(this.scene, this.camera);
+    if (this.shadowScan-- <= 0) {
+      this.shadowScan = 30;
+      this.applyShadows();
+    }
+    this.followSun();
+    const hp = me.hp ?? 0;
+    if (this.lastHp >= 0 && hp < this.lastHp) this.hurtGlow = Math.min(1, this.hurtGlow + (this.lastHp - hp) / 40);
+    this.lastHp = hp;
+    this.hurtGlow = Math.max(0, this.hurtGlow - dt * 1.6);
+    const low = me.alive === 1 && me.maxHp > 0 && hp < me.maxHp * 0.3 ? 0.35 : 0;
+    this.grade.uniforms.hurt.value = Math.max(this.hurtGlow, low);
+    this.composer.render(dt);
     updateHud(this.session, {
       prompt: this.prompt(me),
       pause: keys.has("Escape"),
@@ -1582,7 +1970,7 @@ export class ThreeView {
     if (me.alive !== 1 || me.seat >= 0 || blocked) {
       if (me.seat >= 0) {
         const ride = me.vehicleId ? this.session.state?.vehicles.get(me.vehicleId) : undefined;
-        this.floorZ = ride?.kind === "heli" ? ride.z : 0;
+        this.floorZ = ride?.kind === "heli" || ride?.kind === "jet" ? ride.z : 0;
       }
       this.climbing = false;
       return;
@@ -1687,7 +2075,7 @@ export class ThreeView {
     const aim = sample?.aim ?? p.aim;
     const pitch = sample?.pitch ?? p.pitch ?? 0;
     const ride = p.vehicleId ? this.session.state?.vehicles.get(p.vehicleId) : undefined;
-    const seatEye = p.seat < 0 ? 0 : ride?.kind === "heli" ? 0.25 : BIKE_EYE;
+    const seatEye = p.seat < 0 ? 0 : ride?.kind === "heli" || ride?.kind === "jet" ? 0.25 : BIKE_EYE;
     this.camera.position.set(x * S, EYE + feet * S + seatEye, y * S);
     this.camera.rotation.order = "YXZ";
     this.camera.rotation.y = -(aim + Math.PI / 2);
@@ -1711,7 +2099,7 @@ export class ThreeView {
   private updateCamera(me: SyncPlayer, dt: number, input: MoveInput): void {
     const eye = this.origin(me);
     const ride = me.vehicleId ? this.session.state?.vehicles.get(me.vehicleId) : undefined;
-    const flying = ride?.kind === "heli";
+    const flying = ride?.kind === "heli" || ride?.kind === "jet";
     const pitch = this.pitch;
     const crouch = !!input.crouch && me.seat < 0;
     const moving = Math.hypot(input.mx, input.my) > 0.1;
@@ -1719,14 +2107,14 @@ export class ThreeView {
     const bobAmp = me.seat >= 0 ? 0.015 : sprinting ? 0.07 : crouch ? 0.02 : 0.04;
     const bobY = Math.sin(this.bob) * bobAmp;
     const crouchDrop = crouch ? 0.55 : 0;
-    const seatEye = me.seat < 0 ? 0 : ride?.kind === "heli" ? 0.25 : BIKE_EYE;
+    const seatEye = me.seat < 0 ? 0 : ride?.kind === "heli" || ride?.kind === "jet" ? 0.35 : BIKE_EYE;
     const eyeY = EYE - crouchDrop + bobY + this.jumpY + this.floorZ * S + seatEye;
     this.camera.position.set(eye.x * S, eyeY, eye.y * S);
     // YXZ: +X looks up. Same sign the server uses, so the crosshair and the bullet match.
     this.camera.rotation.order = "YXZ";
-    this.camera.rotation.y = -this.yaw;
-    this.camera.rotation.x = pitch;
-    this.camera.rotation.z = 0;
+    this.camera.rotation.y = -this.yaw + this.punchYaw;
+    this.camera.rotation.x = pitch + this.punchPitch;
+    this.camera.rotation.z = ride?.kind === "jet" && me.seat === 0 ? -input.steer * 0.42 : 0;
 
     const def = CLASSES[me.classId as ClassId];
     const slotted = def ? slotWeapon(def, me.weaponSlot || 1) : null;
@@ -1747,6 +2135,7 @@ export class ThreeView {
     const skin = heliPilot ? "smg"
       : me.weaponSlot === 4 ? "hotdog"
         : me.weaponSlot === 5 ? "cheese"
+        : me.weaponSlot === 7 ? "rocket"
         : slotted === "barricade" ? "barricade"
           : slotted === "rocket" ? "rocket"
             : slotted === "sniper" ? "sniper"
@@ -1760,15 +2149,16 @@ export class ThreeView {
       this.buildGun(skin);
     }
     const bobX = Math.cos(this.bob * 0.5) * 0.012;
-    const bobY = 0.02 + this.gunKick * 0.06 + Math.sin(this.bob) * 0.008;
+    const bobY = 0.02 + Math.sin(this.bob) * 0.008;
+    const kick = this.gunKick;
     const ads = mouse.right && me.seat < 0;
     // ADS pulls the viewmodel toward the crosshair axis so the muzzle tracks aim.
     if (ads) {
-      this.gunRoot.position.set(0.06 + bobX * 0.3, -0.14 - bobY * 0.5, -0.42 - this.gunKick * 0.03);
-      this.gunRoot.rotation.set(0.02 + this.gunKick * 0.08, -0.04, -0.02);
+      this.gunRoot.position.set(0.06 + bobX * 0.3, -0.14 - bobY * 0.5 + kick * 0.006, -0.42 + kick * 0.045);
+      this.gunRoot.rotation.set(0.02 + kick * 0.05, -0.04, -0.02 + this.gunRoll * 0.5);
     } else {
-      this.gunRoot.position.set(0.16 + bobX, -0.18 - bobY, -0.38 - this.gunKick * 0.04);
-      this.gunRoot.rotation.set(0.02 + this.gunKick * 0.08, -0.06, -0.02);
+      this.gunRoot.position.set(0.16 + bobX, -0.18 - bobY + kick * 0.01, -0.38 + kick * 0.065);
+      this.gunRoot.rotation.set(0.02 + kick * 0.11, -0.06 + this.punchYaw * 2, -0.02 + this.gunRoll);
     }
     this.gunRoot.visible = me.alive === 1;
   }
@@ -1811,6 +2201,7 @@ export class ThreeView {
     if (def.special) slots.push(3);
     if (def.grenades > 0) slots.push(4);
     slots.push(5); // cheese gun
+    slots.push(7); // rocket launcher
     if (slots.length < 2) return;
 
     const now = performance.now();
@@ -1871,6 +2262,7 @@ export class ThreeView {
     if (down(b.slot3)) slot = 3;
     if (down(b.slot4)) slot = 4;
     if (down(b.slot5)) slot = 5;
+    if (down(b.slot7)) slot = 7;
     if (this.wheelSlot) {
       slot = this.wheelSlot;
       this.wheelSlot = 0;
@@ -1879,7 +2271,7 @@ export class ThreeView {
     const steer = (down(b.right) || down("ArrowRight") ? 1 : 0) + (down(b.left) || down("ArrowLeft") ? -1 : 0);
     const onBike = me.seat >= 0;
     const ride = rideEarly;
-    const flying = ride?.kind === "heli";
+    const flying = ride?.kind === "heli" || ride?.kind === "jet";
     const crouching = !onBike && down(b.crouch);
     const pitch = this.pitch;
     return {
@@ -1957,88 +2349,215 @@ export class ThreeView {
     }
   }
 
-  private makeSoldier(): THREE.Group {
+  private skinTone(name: string): number {
+    const tones = [0xd4a574, 0xc68642, 0xe0b090, 0x8d5524, 0xf1c27d, 0xb07a4b, 0xffdbac];
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = (h + name.charCodeAt(i) * (i + 3)) | 0;
+    return tones[Math.abs(h) % tones.length];
+  }
+
+  private lookKey(p?: SyncPlayer): string {
+    if (!p) return "default";
+    return [p.identity, p.shirt, p.pants, p.helmet, p.hat, p.vest, p.face].join("-");
+  }
+
+  /** Human figure with shirt, pants, kit, and a held rifle. */
+  private makeSoldier(p?: SyncPlayer): THREE.Group {
     const g = new THREE.Group();
-    g.name = "cheezit";
-    const orange = solidMat(0xf07818);
-    const orangeDark = solidMat(0xd45810);
-    const white = solidMat(0xfff8ee);
-    const black = solidMat(0x1a1a1a);
+    g.name = "soldier";
+    g.userData.look = this.lookKey(p);
+    const skin = solidMat(this.skinTone(p?.identity || p?.name || "player"));
+    const shirtHex = parseInt((SHIRTS[p?.shirt ?? 6] ?? "#3d7ec4").slice(1), 16);
+    const pantsHex = parseInt((PANTS[p?.pants ?? 0] ?? "#3a3e36").slice(1), 16);
+    const shirt = solidMat(shirtHex);
+    const pants = solidMat(pantsHex);
+    const boot = solidMat(0x1a1c1e);
+    const hair = solidMat(0x2a2218);
+    const white = solidMat(0xf4f0ea);
+    const black = solidMat(0x141414);
+    const kit = solidMat(0x2c3228);
     const gunMetal = solidMat(0x2a2a28);
     const wood = solidMat(0x6a4a28);
+    const strap = solidMat(0x3a342c);
 
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 0.7, 6, 10), orange);
-    body.position.y = 1.05;
-    body.scale.set(1.2, 1, 0.86);
-    body.name = "body";
+    const hips = new THREE.Group();
+    hips.name = "hips";
+    const pelvis = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.16, 0.2), pants);
+    pelvis.position.y = 0.92;
+    pelvis.name = "body";
+    hips.add(pelvis);
 
-    const salt = (x: number, y: number, z: number) => {
-      const s = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.06, 0.05), orangeDark);
-      s.position.set(x, y, z);
-      return s;
-    };
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.48, 0.24), shirt);
+    torso.position.y = 1.24;
+    const chest = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.18, 0.26), shirt);
+    chest.position.y = 1.42;
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.1, 8), skin);
+    neck.position.y = 1.54;
+    g.add(torso, chest, neck, hips);
 
-    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.085, 8, 8), white);
-    eyeL.position.set(-0.12, 1.28, 0.3);
-    const eyeR = new THREE.Mesh(new THREE.SphereGeometry(0.085, 8, 8), white);
-    eyeR.position.set(0.13, 1.28, 0.3);
-    const pupilL = new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 6), black);
-    pupilL.position.set(-0.1, 1.28, 0.37);
-    const pupilR = new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 6), black);
-    pupilR.position.set(0.15, 1.28, 0.37);
-    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.04, 0.04), black);
-    brow.position.set(0.01, 1.4, 0.32);
-    const smile = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.018, 6, 8, Math.PI), black);
-    smile.position.set(0.01, 1.08, 0.3);
-    smile.rotation.z = Math.PI;
+    if ((p?.vest ?? 1) > 0) {
+      const vest = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.36, 0.28), kit);
+      vest.position.y = 1.28;
+      const plate = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.22, 0.04), solidMat(0x4a4e46));
+      plate.position.set(0, 1.3, 0.15);
+      g.add(vest, plate);
+    }
 
-    const armL = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.05, 0.32, 7), orange);
-    armL.position.set(-0.42, 1.12, 0.02);
-    armL.rotation.z = 0.7;
-    const foreL = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.04, 0.28, 7), orange);
-    foreL.position.set(-0.58, 0.9, 0.08);
-    foreL.rotation.z = 0.35;
-    const handL = new THREE.Mesh(new THREE.SphereGeometry(0.07, 7, 7), orangeDark);
-    handL.position.set(-0.64, 0.76, 0.12);
+    const head = new THREE.Group();
+    head.name = "head";
+    head.position.y = 1.68;
+    const skull = new THREE.Mesh(new THREE.SphereGeometry(0.145, 12, 10), skin);
+    skull.scale.set(0.92, 1.05, 0.95);
+    const earL = new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 6), skin);
+    earL.position.set(-0.14, 0, 0);
+    const earR = earL.clone();
+    earR.position.x = 0.14;
+    const nose = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.04, 0.04), skin);
+    nose.position.set(0, -0.02, 0.13);
+    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.02, 0.03), hair);
+    brow.position.set(0, 0.06, 0.12);
+    const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.028, 8, 8), white);
+    eyeL.position.set(-0.045, 0.02, 0.125);
+    const eyeR = eyeL.clone();
+    eyeR.position.x = 0.045;
+    const pupilL = new THREE.Mesh(new THREE.SphereGeometry(0.012, 6, 6), black);
+    pupilL.position.set(-0.045, 0.02, 0.148);
+    const pupilR = pupilL.clone();
+    pupilR.position.x = 0.045;
+    const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.012, 0.012), solidMat(0x8a4a42));
+    mouth.position.set(0, -0.07, 0.13);
+    const hairCap = new THREE.Mesh(new THREE.SphereGeometry(0.15, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), hair);
+    hairCap.position.y = 0.02;
+    head.add(skull, earL, earR, nose, brow, eyeL, eyeR, pupilL, pupilR, mouth, hairCap);
 
-    const armR = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.05, 0.3, 7), orange);
-    armR.position.set(0.38, 1.16, 0.16);
-    armR.rotation.set(1.15, 0.2, -0.45);
-    const foreR = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.04, 0.28, 7), orange);
-    foreR.position.set(0.42, 1.02, 0.38);
-    foreR.rotation.x = 1.35;
-    const handR = new THREE.Mesh(new THREE.SphereGeometry(0.07, 7, 7), orangeDark);
-    handR.position.set(0.4, 0.98, 0.52);
+    const face = p?.face ?? 0;
+    if (face === 1) {
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(0.034, 0.006, 6, 10), black);
+      const rimL = rim.clone();
+      rimL.position.set(-0.045, 0.02, 0.13);
+      const rimR = rim.clone();
+      rimR.position.set(0.045, 0.02, 0.13);
+      const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.008, 0.008), black);
+      bridge.position.set(0, 0.025, 0.13);
+      head.add(rimL, rimR, bridge);
+    } else if (face === 2) {
+      const beard = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6, 0, Math.PI * 2, Math.PI * 0.45, Math.PI * 0.4), hair);
+      beard.position.set(0, -0.08, 0.04);
+      beard.scale.set(1, 0.7, 0.85);
+      head.add(beard);
+    } else if (face === 3) {
+      const mask = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.1, 0.12), kit);
+      mask.position.set(0, -0.04, 0.1);
+      head.add(mask);
+    }
 
-    const legL = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.06, 0.42, 7), orange);
-    legL.position.set(-0.14, 0.42, 0.02);
-    const legR = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.06, 0.42, 7), orange);
-    legR.position.set(0.15, 0.42, 0.02);
-    const shoeL = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.08, 0.28), white);
-    shoeL.position.set(-0.14, 0.16, 0.06);
-    const shoeR = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.08, 0.28), white);
-    shoeR.position.set(0.15, 0.16, 0.06);
+    const helmet = p?.helmet ?? 0;
+    const hat = p?.hat ?? 0;
+    if (helmet === 1) {
+      const helm = new THREE.Mesh(new THREE.SphereGeometry(0.17, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.58), kit);
+      helm.position.y = 0.04;
+      const brim = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.03, 0.08), kit);
+      brim.position.set(0, 0.02, 0.14);
+      head.add(helm, brim);
+    } else if (helmet === 2) {
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.5), shirt);
+      cap.position.y = 0.05;
+      const bill = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.02, 0.1), shirt);
+      bill.position.set(0, 0.04, 0.16);
+      head.add(cap, bill);
+    } else if (helmet === 3) {
+      const beret = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.48), solidMat(0x3a4a2c));
+      beret.position.set(0.03, 0.08, 0);
+      beret.scale.set(1.15, 0.45, 1.1);
+      head.add(beret);
+    } else if (hat === 1) {
+      const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.02, 12), kit);
+      brim.position.y = 0.06;
+      const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.14, 0.1, 10), kit);
+      crown.position.y = 0.12;
+      head.add(brim, crown);
+    } else if (hat === 2) {
+      const beanie = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.62), solidMat(0x2a3a48));
+      beanie.position.y = 0.04;
+      head.add(beanie);
+    }
+    g.add(head);
+
+    const armL = new THREE.Group();
+    armL.name = "armL";
+    armL.position.set(-0.24, 1.42, 0);
+    const uL = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.05, 0.32, 8), shirt);
+    uL.position.set(-0.04, -0.16, 0);
+    const fL = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.04, 0.28, 8), skin);
+    fL.position.set(-0.06, -0.42, 0.04);
+    const hL = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), skin);
+    hL.position.set(-0.07, -0.58, 0.06);
+    armL.add(uL, fL, hL);
+    armL.rotation.z = 0.18;
+
+    const armR = new THREE.Group();
+    armR.name = "armR";
+    armR.position.set(0.22, 1.4, 0.04);
+    const uR = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.05, 0.3, 8), shirt);
+    uR.position.set(0.04, -0.12, 0.08);
+    uR.rotation.x = 1.05;
+    const fR = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.04, 0.26, 8), skin);
+    fR.position.set(0.06, -0.08, 0.28);
+    fR.rotation.x = 1.25;
+    const hR = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), skin);
+    hR.position.set(0.06, -0.04, 0.42);
+    armR.add(uR, fR, hR);
+    g.add(armL, armR);
+
+    const thighL = new THREE.Group();
+    thighL.name = "legL";
+    thighL.position.set(-0.1, 0.84, 0);
+    const tL = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.065, 0.4, 8), pants);
+    tL.position.y = -0.2;
+    const cL = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.05, 0.36, 8), pants);
+    cL.position.y = -0.54;
+    const sL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.24), boot);
+    sL.position.set(0, -0.74, 0.04);
+    thighL.add(tL, cL, sL);
+
+    const thighR = new THREE.Group();
+    thighR.name = "legR";
+    thighR.position.set(0.1, 0.84, 0);
+    const tR = tL.clone();
+    const cR = cL.clone();
+    const sR = sL.clone();
+    thighR.add(tR, cR, sR);
+    hips.add(thighL, thighR);
 
     const gun = new THREE.Group();
-    const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.09, 0.36), gunMetal);
-    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.035, 0.34), gunMetal);
-    barrel.position.z = 0.32;
-    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.12, 0.06), wood);
+    gun.name = "heldGun";
+    const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.08, 0.34), gunMetal);
+    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.028, 0.32), gunMetal);
+    barrel.position.z = 0.3;
+    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.07, 0.16), wood);
+    stock.position.z = -0.22;
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.12, 0.05), wood);
     grip.position.set(0, -0.08, -0.04);
     grip.rotation.x = -0.35;
-    const mag = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.14, 0.07), gunMetal);
+    const mag = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.14, 0.06), gunMetal);
     mag.position.set(0, -0.1, 0.04);
-    gun.add(receiver, barrel, grip, mag);
-    gun.position.set(0.4, 0.96, 0.58);
-
-    g.add(
-      body,
-      salt(-0.16, 1.42, 0.28), salt(0.18, 1.18, 0.28), salt(-0.08, 0.86, 0.26),
-      eyeL, eyeR, pupilL, pupilR, brow, smile,
-      armL, foreL, handL, armR, foreR, handR,
-      legL, legR, shoeL, shoeR, gun,
-    );
+    const sling = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.012, 0.28), strap);
+    sling.position.set(-0.04, 0.04, 0);
+    gun.add(receiver, barrel, stock, grip, mag, sling);
+    gun.position.set(0.22, 1.28, 0.42);
+    gun.rotation.set(0.08, 0.08, 0.05);
+    g.add(gun);
     return g;
+  }
+
+  private poseSoldier(node: THREE.Object3D, moving: boolean, sprint: boolean, now: number): void {
+    const swing = moving ? Math.sin(now * (sprint ? 0.014 : 0.01)) * (sprint ? 0.55 : 0.38) : 0;
+    const legL = node.getObjectByName("legL");
+    const legR = node.getObjectByName("legR");
+    const armL = node.getObjectByName("armL");
+    if (legL) legL.rotation.x = swing;
+    if (legR) legR.rotation.x = -swing;
+    if (armL) armL.rotation.x = -swing * 0.45;
   }
 
   private makeDerl(): THREE.Group {
@@ -2281,6 +2800,28 @@ export class ThreeView {
     return g;
   }
 
+  private makeJet(): THREE.Group {
+    const g = new THREE.Group();
+    const hull = solidMat(0xd8dde4);
+    const dark = solidMat(0x2a3140);
+    const red = solidMat(0xc42828);
+    const glass = new THREE.MeshLambertMaterial({ color: 0x9fd0ea, transparent: true, opacity: 0.75 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.42, 5.4), hull);
+    body.position.set(0, 0.7, 0);
+    const nose = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.28, 1.1), red);
+    nose.position.set(0, 0.68, 3.05);
+    const canopy = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.28, 1.15), glass);
+    canopy.position.set(0, 1.02, 0.7);
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(5.6, 0.06, 1.35), dark);
+    wing.position.set(0, 0.62, 0.15);
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.05, 0.7), dark);
+    tail.position.set(0, 0.78, -2.35);
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.85, 0.7), dark);
+    fin.position.set(0, 1.15, -2.4);
+    g.add(body, nose, canopy, wing, tail, fin);
+    return g;
+  }
+
   private makeCar(): THREE.Group {
     const g = new THREE.Group();
     const fusionTex = new THREE.TextureLoader().load(`${import.meta.env.BASE_URL}fusion-tex.png`);
@@ -2314,6 +2855,22 @@ export class ThreeView {
     const grill = new THREE.Mesh(new THREE.BoxGeometry(wid * 0.7, 0.16, 0.06), chrome);
     grill.position.set(0, 0.4, len * 0.48);
     g.add(grill);
+    return g;
+  }
+
+  private makeAlpTin(): THREE.Group {
+    const g = new THREE.Group();
+    const tex = new THREE.TextureLoader().load(`${import.meta.env.BASE_URL}alp.png`);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const lid = new THREE.Mesh(
+      new THREE.CircleGeometry(0.42, 28),
+      new THREE.MeshBasicMaterial({ map: tex }),
+    );
+    lid.rotation.x = -Math.PI / 2;
+    lid.position.y = 0.52;
+    const can = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.18, 24), solidMat(0x111111));
+    can.position.y = 0.42;
+    g.add(can, lid);
     return g;
   }
 
@@ -2521,8 +3078,10 @@ export class ThreeView {
       const now = performance.now();
       const sample = this.sample(ghost);
       let node = this.entities.get(id);
-      if (!node) {
-        node = cheese ? this.makeCheeseCurl() : derl ? this.makeDerl() : this.makeSoldier();
+      const look = this.lookKey(p);
+      if (!node || (!cheese && !derl && node.userData.look !== look)) {
+        if (node) this.worldRoot.remove(node);
+        node = cheese ? this.makeCheeseCurl() : derl ? this.makeDerl() : this.makeSoldier(p);
         this.worldRoot.add(node);
         this.entities.set(id, node);
       }
@@ -2532,14 +3091,33 @@ export class ThreeView {
       node.position.set(sample.x * S, sample.z * S + bob, sample.y * S);
       node.rotation.y = Math.PI / 2 - sample.aim;
       node.visible = true;
-      const body = node.getObjectByName("body") as THREE.Mesh | undefined;
-      if (body && derl) {
-        (body.material as THREE.MeshLambertMaterial).color.setHex(0x6a2040);
-      } else if (body && !cheese && !derl) {
-        (body.material as THREE.MeshLambertMaterial).color.setHex(
-          p.blip && !this.visible(me, p) ? 0xffb020 : 0xf07818,
-        );
+      if (!cheese && !derl) {
+        const prev = ghost.samples.length > 1 ? ghost.samples[ghost.samples.length - 2] : null;
+        const moving = !!prev && Math.hypot(sample.x - prev.x, sample.y - prev.y) > 1.2;
+        this.poseSoldier(node, moving, p.sprinting === 1, now);
+        if (p.blip && !this.visible(me, p)) {
+          node.traverse((obj) => {
+            const mesh = obj as THREE.Mesh;
+            if (mesh.isMesh && mesh.material && "emissive" in mesh.material) {
+              (mesh.material as THREE.MeshLambertMaterial).emissive?.setHex(0x332200);
+            }
+          });
+        }
       }
+      let shield = node.getObjectByName("alp");
+      if ((p.shield ?? 0) > 0.2 && !cheese && !derl) {
+        if (!shield) {
+          shield = new THREE.Mesh(
+            new THREE.TorusGeometry(0.62, 0.045, 8, 18),
+            new THREE.MeshBasicMaterial({ color: 0x1f8a3a, transparent: true, opacity: 0.9 }),
+          );
+          shield.name = "alp";
+          shield.rotation.x = Math.PI / 2;
+          shield.position.y = 1.15;
+          node.add(shield);
+        }
+        shield.visible = true;
+      } else if (shield) shield.visible = false;
     });
     for (const [id, node] of this.entities) {
       if (!seen.has(id)) {
@@ -2557,13 +3135,28 @@ export class ThreeView {
       let node = this.bikes.get(id);
       if (!node || node.userData.kind !== bike.kind) {
         if (node) this.worldRoot.remove(node);
-        node = bike.kind === "heli" ? this.makeHeli() : bike.kind === "car" ? this.makeCar() : this.makeBike();
+        node = bike.kind === "heli" ? this.makeHeli() : bike.kind === "jet" ? this.makeJet() : bike.kind === "car" ? this.makeCar() : this.makeBike();
         node.userData.kind = bike.kind;
         this.worldRoot.add(node);
         this.bikes.set(id, node);
       }
       node.position.set(bike.x * S, (bike.z || 0) * S, bike.y * S);
+      node.rotation.order = "YXZ";
       node.rotation.y = -bike.heading + Math.PI / 2;
+      if (bike.kind === "jet") {
+        const prev = (node.userData.heading as number) ?? bike.heading;
+        let turn = bike.heading - prev;
+        while (turn > Math.PI) turn -= Math.PI * 2;
+        while (turn < -Math.PI) turn += Math.PI * 2;
+        node.userData.heading = bike.heading;
+        node.userData.bank = ((node.userData.bank as number) || 0) * 0.82 + turn * 6;
+        const bank = Math.max(-0.7, Math.min(0.7, node.userData.bank as number));
+        node.rotation.x = -(bike.pitch || 0);
+        node.rotation.z = bank;
+      } else {
+        node.rotation.x = 0;
+        node.rotation.z = 0;
+      }
       if (bike.kind === "heli") {
         const spinning = !!bike.driver || Math.abs(bike.speed) > 12 || bike.z > 8;
         const rotor = node.getObjectByName("rotor");
@@ -2583,9 +3176,11 @@ export class ThreeView {
     this.session.state?.projectiles.forEach((shot, id) => {
       projSeen.add(id);
       const hotdog = shot.kind === "grenade" || shot.weapon === "grenade";
+      const smoke = shot.kind === "smoke" || shot.weapon === "smoke";
       let node = this.projectiles.get(id);
       if (!node) {
         if (hotdog) node = this.makeHotdog();
+        else if (smoke) node = this.makeSmokeCanister();
         else if (shot.kind === "rocket" || shot.weapon === "rocket") {
           node = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.42, 8), solidMat(0xd24a2a));
           node.rotation.x = Math.PI / 2;
@@ -2603,6 +3198,9 @@ export class ThreeView {
         node.userData.spin = (node.userData.spin || 0) + 0.28;
         // Long axis along travel, end-over-end tumble
         node.rotation.set(node.userData.spin, yaw, Math.sin(node.userData.spin * 0.7) * 0.35);
+      } else if (smoke) {
+        node.userData.spin = (node.userData.spin || 0) + 0.2;
+        node.rotation.set(0.4, node.userData.spin, 0.2);
       }
     });
     for (const [id, node] of this.projectiles) {
@@ -2621,6 +3219,15 @@ export class ThreeView {
         if (pick.kind === "colt") {
           node = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.45, 10), solidMat(0xc8a050));
           node.position.y = 0.25;
+        } else if (pick.kind === "smoke") {
+          node = this.makeSmokeCanister();
+          node.scale.setScalar(1.35);
+        } else if (pick.kind === "alp") {
+          node = this.makeAlpTin();
+        } else if (pick.kind === "rocket") {
+          node = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.9, 8), solidMat(0xc43a28));
+          node.rotation.z = Math.PI / 2;
+          node.position.y = 0.35;
         } else {
           let hash = 0;
           for (let i = 0; i < id.length; i++) hash = (hash + id.charCodeAt(i) * (i + 3)) | 0;
@@ -2629,10 +3236,13 @@ export class ThreeView {
         this.worldRoot.add(node);
         this.pickups.set(id, node);
       }
-      const baseY = pick.kind === "colt" ? 0.25 : 0;
+      const baseY = pick.kind === "colt" ? 0.25 : pick.kind === "smoke" ? 0.28 : pick.kind === "alp" ? 0 : pick.kind === "rocket" ? 0.35 : 0;
       node.position.set(pick.x * S, baseY, pick.y * S);
       if (pick.kind === "loco" && node.userData.spin != null) {
         node.userData.spin += 0.012;
+        node.rotation.y = node.userData.spin;
+      } else if (pick.kind === "smoke" || pick.kind === "alp") {
+        node.userData.spin = (node.userData.spin || 0) + 0.018;
         node.rotation.y = node.userData.spin;
       }
     });
@@ -2642,6 +3252,89 @@ export class ThreeView {
         this.pickups.delete(id);
       }
     }
+
+    this.syncSmokeClouds(dt);
+  }
+
+  private syncSmokeClouds(dt: number): void {
+    const seen = new Set<string>();
+    this.session.state?.smokeClouds?.forEach((cloud, id) => {
+      seen.add(id);
+      let node = this.smokeCloudMeshes.get(id);
+      if (!node) {
+        node = this.makeSmokeCloudMesh(cloud.r * S);
+        this.worldRoot.add(node);
+        this.smokeCloudMeshes.set(id, node);
+      }
+      node.position.set(cloud.x * S, 1.1, cloud.y * S);
+      node.userData.age = (node.userData.age || 0) + dt;
+      const age = node.userData.age as number;
+      const swell = Math.min(1, age / 0.55);
+      node.scale.setScalar(0.35 + swell * 0.65);
+      node.rotation.y += dt * 0.15;
+      for (const child of node.children) {
+        const mat = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
+        if (mat?.opacity != null) mat.opacity = 0.42 + Math.sin(age * 1.4 + child.position.x) * 0.06;
+      }
+    });
+    for (const [id, node] of this.smokeCloudMeshes) {
+      if (!seen.has(id)) {
+        this.worldRoot.remove(node);
+        this.smokeCloudMeshes.delete(id);
+      }
+    }
+  }
+
+  /** Gray canister — ground pickup and in-flight smoke grenade. */
+  private makeSmokeCanister(): THREE.Group {
+    const root = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.11, 0.12, 0.42, 10),
+      solidMat(0x6a6e72),
+    );
+    body.position.y = 0.21;
+    const cap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.09, 0.11, 0.08, 10),
+      solidMat(0x3a3d40),
+    );
+    cap.position.y = 0.46;
+    const stripe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.125, 0.125, 0.06, 10),
+      solidMat(0xb8bcc0),
+    );
+    stripe.position.y = 0.28;
+    const pin = new THREE.Mesh(
+      new THREE.TorusGeometry(0.07, 0.015, 6, 10),
+      solidMat(0xd0d4d8),
+    );
+    pin.position.set(0.08, 0.48, 0);
+    pin.rotation.y = Math.PI / 2;
+    root.add(body, cap, stripe, pin);
+    return root;
+  }
+
+  private makeSmokeCloudMesh(radius: number): THREE.Group {
+    const root = new THREE.Group();
+    const mat = () => new THREE.MeshBasicMaterial({
+      color: 0x9aa0a6,
+      transparent: true,
+      opacity: 0.48,
+      depthWrite: false,
+    });
+    const blobs = [
+      [0, 0.6, 0, 1],
+      [0.55, 0.45, 0.2, 0.72],
+      [-0.5, 0.5, -0.25, 0.78],
+      [0.15, 0.85, -0.55, 0.65],
+      [-0.25, 0.35, 0.55, 0.7],
+      [0.4, 0.7, 0.45, 0.6],
+    ] as const;
+    for (const [x, y, z, s] of blobs) {
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(radius * 0.55 * s, 12, 10), mat());
+      puff.position.set(x * radius * 0.55, y * radius * 0.35, z * radius * 0.55);
+      root.add(puff);
+    }
+    return root;
   }
 
   private sample(ghost: Ghost): { x: number; y: number; z: number; aim: number; pitch: number } {
@@ -2679,6 +3372,29 @@ export class ThreeView {
     const h = this.overlay.height;
     const ctx = this.octx;
     ctx.clearRect(0, 0, w, h);
+    const markLeft = this.hitMark.until - performance.now();
+    if (markLeft > 0) {
+      const k = this.hitMark.kill;
+      const life = Math.min(1, markLeft / (k ? 420 : 220));
+      const inner = k ? 9 : 7;
+      const outer = (k ? 22 : 15) + (1 - life) * 4;
+      ctx.save();
+      ctx.translate(w / 2, h / 2);
+      ctx.lineCap = "round";
+      for (const pass of [0, 1]) {
+        ctx.lineWidth = pass === 0 ? (k ? 5 : 4) : k ? 3 : 2;
+        ctx.strokeStyle = pass === 0
+          ? `rgba(0,0,0,${0.5 * life})`
+          : this.hitMark.head ? `rgba(255,60,50,${life})` : `rgba(255,255,255,${life})`;
+        ctx.beginPath();
+        for (const [sx, sy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+          ctx.moveTo(sx * inner, sy * inner);
+          ctx.lineTo(sx * outer, sy * outer);
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
     const prefs = loadPrefs();
     const big = keys.has(prefs.binds.map);
     const mw = big ? Math.min(480, w * 0.4) : Math.min(190, w * 0.18);
@@ -2748,6 +3464,7 @@ export class ThreeView {
     if (me.alive !== 1) return "";
     if (me.seat >= 0) {
       const ride = me.vehicleId ? this.session.state?.vehicles.get(me.vehicleId) : undefined;
+      if (me.seat === 0 && ride?.kind === "jet") return "W THROTTLE   A D OVERSTEER   SPACE NOSE UP   CTRL NOSE DOWN   IT CRASHES";
       if (me.seat === 0 && ride?.kind === "heli") return "FREE LOOK    HOLD CLICK SMG    E DISMOUNT";
       if (me.seat === 0) return "FREE LOOK    W DRIVE    A D STEER    E DISMOUNT";
       return "FREE LOOK    E DISMOUNT";
@@ -2761,16 +3478,19 @@ export class ThreeView {
     let nearBike = false;
     let nearHeli = false;
     let nearCar = false;
+    let nearJet = false;
     this.session.state?.vehicles.forEach((bike) => {
       if (!bike.alive || bike.z > 64) return;
       const d = (bike.x - me.x) ** 2 + (bike.y - me.y) ** 2;
-      const reach = bike.kind === "heli" ? 78 : bike.kind === "car" ? 96 : 56;
+      const reach = bike.kind === "heli" ? 78 : bike.kind === "jet" || bike.kind === "car" ? 96 : 56;
       if (d < reach * reach) {
         if (bike.kind === "heli") nearHeli = true;
+        else if (bike.kind === "jet") nearJet = true;
         else if (bike.kind === "car") nearCar = true;
         else nearBike = true;
       }
     });
+    if (nearJet) return "E  FLY THE JET";
     if (nearHeli) return "E  FLY HELICOPTER";
     if (nearCar) return "E  DRIVE FUSION";
     return nearBike ? "E  RIDE EBIKE" : "";

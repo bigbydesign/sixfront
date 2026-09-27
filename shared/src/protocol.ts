@@ -7,6 +7,7 @@ export interface JoinOptions {
   identity?: string;
   classId?: string;
   look?: Partial<Look>;
+  password?: string;
 }
 
 export interface ClientMessageMap {
